@@ -1,20 +1,15 @@
-# Python
+backend/storage/
+backend/downloads/
+backend/*.db
+backend/*.db-journal
+backend/*.pt
+backend/*.ass
 backend/venv/
-backend/__pycache__/
-*.pyc
-.env
-
-# Node.js
+backend/.env
 frontend/node_modules/
 frontend/dist/
-
-# Database
-*.db
-*.db-journal
-
-# VS Code
-.vscode/
-
-# OS
+**/__pycache__/
+**/*.pyc
 .DS_Store
 Thumbs.db
+.vscode/
