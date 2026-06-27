@@ -1,0 +1,14 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+sqlalchemy==2.0.36
+pydantic==2.10.3
+python-dotenv==1.0.1
+# YouTube changes frequently; keeping yt-dlp current is required for downloads.
+yt-dlp>=2025.1.15
+faster-whisper==1.1.0
+google-genai==0.3.0
+ultralytics==8.3.40
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+Pillow>=10.4.0
+python-multipart==0.0.20

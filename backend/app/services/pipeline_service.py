@@ -1,0 +1,236 @@
+"""
+pipeline_service.py
+
+Orchestrates the full "paste a link -> get clips" pipeline as a single
+background task, updating the Job row's status/progress at each step so
+the frontend's step-by-step UI can poll GET /jobs/{id} and render live
+progress. This is the only module that calls every other service in
+sequence; individual services stay independent and unit-testable.
+"""
+
+from __future__ import annotations
+
+import json
+import traceback
+
+from sqlalchemy.orm import Session
+
+from app.core.config import REFRAME_TARGET_HEIGHT, REFRAME_TARGET_WIDTH, TARGET_CLIP_COUNT
+from app.core.database import SessionLocal
+from app.models.caption import CaptionBlock
+from app.models.clip import Clip
+from app.models.job import Job, JobStatus
+from app.services import (
+    audio_service,
+    caption_burn_service,
+    caption_service,
+    clip_service,
+    gemini_service,
+    hook_score_service,
+    reframe_service,
+    style_service,
+    transcription_service,
+    video_service,
+)
+
+
+def _update_job(db: Session, job: Job, *, status: JobStatus, progress: float, label: str) -> None:
+    job.status = status
+    job.progress_percent = progress
+    job.current_step_label = label
+    db.commit()
+
+
+def run_pipeline(
+    job_id: str,
+    url: str,
+    target_clip_count: int | None,
+    auto_reframe: bool,
+    auto_caption_style_id: str | None,
+) -> None:
+    """
+    Entry point invoked as a FastAPI BackgroundTask. Owns its own DB
+    session since it runs outside the request/response cycle.
+    """
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job is None:
+            return
+
+        _run_pipeline_inner(db, job, url, target_clip_count, auto_reframe, auto_caption_style_id)
+
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job is not None:
+            job.status = JobStatus.FAILED
+            job.error_message = str(exc)
+            job.current_step_label = "Failed"
+            db.commit()
+    finally:
+        db.close()
+
+
+def _run_pipeline_inner(
+    db: Session,
+    job: Job,
+    url: str,
+    target_clip_count: int | None,
+    auto_reframe: bool,
+    auto_caption_style_id: str | None,
+) -> None:
+    # --- Step 1: download -------------------------------------------------
+    _update_job(db, job, status=JobStatus.DOWNLOADING, progress=5, label="Downloading video")
+    download = video_service.download_video(url)
+    job.source_title = download["title"]
+    job.source_duration = download["duration"] or video_service.probe_duration(download["file_path"])
+    job.source_video_path = download["file_path"]
+    db.commit()
+
+    # --- Step 2: extract audio ---------------------------------------------
+    _update_job(db, job, status=JobStatus.EXTRACTING_AUDIO, progress=20, label="Extracting audio track")
+    audio_path = audio_service.extract_audio(job.source_video_path, job_id=job.id)
+    job.source_audio_path = audio_path
+    db.commit()
+
+    # --- Step 3: transcribe --------------------------------------------------
+    _update_job(db, job, status=JobStatus.TRANSCRIBING, progress=35, label="Transcribing with Whisper")
+    transcript = transcription_service.transcribe_audio(audio_path)
+    job.transcript_json = json.dumps(transcript)
+    db.commit()
+
+    # --- Step 4: AI analysis / segmentation -----------------------------
+    _update_job(db, job, status=JobStatus.ANALYZING, progress=50, label="Analyzing transcript for clip-worthy moments")
+    candidates = gemini_service.analyze_transcript(transcript, target_clip_count or TARGET_CLIP_COUNT)
+
+    # --- Step 5: build Clip rows with hook scores -------------------------
+    _update_job(db, job, status=JobStatus.SEGMENTING, progress=60, label="Scoring and segmenting clips")
+
+    default_style = None
+    if auto_caption_style_id:
+        default_style = style_service.get_style(db, auto_caption_style_id)
+    if default_style is None:
+        default_style = style_service.get_default_style(db)
+
+    clip_rows: list[Clip] = []
+    for idx, candidate in enumerate(candidates):
+        start = max(0.0, candidate["start_time"])
+        end = min(job.source_duration or candidate["end_time"], candidate["end_time"])
+        if end <= start:
+            continue
+
+        clip_words = transcription_service.words_in_range(transcript, start, end)
+        text = candidate.get("title") and candidate.get("reason") or transcription_service.text_in_range(
+            transcript, start, end
+        )
+        full_text = transcription_service.text_in_range(transcript, start, end)
+
+        hook_breakdown = hook_score_service.compute_hook_score(full_text, clip_words)
+        viral_score = hook_score_service.blend_scores(candidate["confidence_score"], hook_breakdown["total"])
+
+        clip = Clip(
+            job_id=job.id,
+            index_in_job=idx,
+            title=candidate.get("title") or f"Clip {idx + 1}",
+            source_start_time=start,
+            source_end_time=end,
+            trim_start_time=start,
+            trim_end_time=end,
+            transcript_text=full_text,
+            confidence_score=candidate["confidence_score"],
+            hook_score=hook_breakdown["total"],
+            viral_score=viral_score,
+            ai_reason=candidate.get("reason"),
+            render_status="pending",
+            applied_style_id=default_style.id if default_style else None,
+        )
+        db.add(clip)
+        db.flush()  # assign clip.id
+
+        blocks = caption_service.build_blocks_from_words(
+            clip_words, words_per_block=default_style.words_per_block if default_style else 3
+        )
+        for block in blocks:
+            db.add(CaptionBlock(clip_id=clip.id, **block))
+
+        clip_rows.append(clip)
+
+    db.commit()
+
+    # --- Step 6: render each clip (trim -> [reframe] -> burn captions) ----
+    _update_job(db, job, status=JobStatus.RENDERING_CLIPS, progress=70, label="Rendering clips")
+
+    total = max(len(clip_rows), 1)
+    for i, clip in enumerate(clip_rows):
+        try:
+            _render_single_clip(db, job, clip, auto_reframe)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            clip.render_status = "failed"
+            db.commit()
+
+        progress = 70 + int(28 * ((i + 1) / total))
+        _update_job(
+            db,
+            job,
+            status=JobStatus.RENDERING_CLIPS,
+            progress=min(98, progress),
+            label=f"Rendering clip {i + 1} of {total}",
+        )
+
+    _update_job(db, job, status=JobStatus.COMPLETED, progress=100, label="Done")
+
+
+def _render_single_clip(db: Session, job: Job, clip: Clip, auto_reframe: bool) -> None:
+    clip.render_status = "rendering"
+    db.commit()
+
+    raw_path = clip_service.render_raw_clip(
+        job.source_video_path, clip.trim_start_time, clip.trim_end_time, clip_id=clip.id
+    )
+    clip.raw_clip_path = raw_path
+    db.commit()
+
+    render_source = raw_path
+    if auto_reframe:
+        duration = clip.trim_end_time - clip.trim_start_time
+        reframed_path = reframe_service.render_vertical_reframe(raw_path, duration, clip_id=clip.id)
+        clip.reframed_clip_path = reframed_path
+        clip.is_vertical = True
+        render_source = reframed_path
+        video_width, video_height = REFRAME_TARGET_WIDTH, REFRAME_TARGET_HEIGHT
+    else:
+        video_width, video_height = video_service.probe_dimensions(raw_path)
+        video_width = video_width or 1920
+        video_height = video_height or 1080
+
+    db.commit()
+
+    if clip.applied_style and clip.caption_blocks:
+        style_dict = clip.applied_style.to_dict()
+        block_dicts = [b.to_dict() for b in clip.caption_blocks]
+        ass_content = caption_service.generate_ass_file(block_dicts, style_dict, video_width, video_height)
+        ass_path = caption_burn_service.write_ass_file(ass_content, clip.id)
+        final_path = caption_burn_service.burn_captions(
+            render_source,
+            ass_path,
+            clip_id=clip.id,
+            blocks=block_dicts,
+            style=style_dict,
+            video_width=video_width,
+            video_height=video_height,
+        )
+        clip.final_clip_path = final_path
+    else:
+        if not clip.caption_blocks:
+            print(
+                f"[pipeline_service] Clip {clip.id} has no caption blocks (Whisper produced no words "
+                "for this time range) -- rendering without captions. Add captions manually from the "
+                "clip editor's Captions tab."
+            )
+        clip.final_clip_path = render_source
+
+    clip.thumbnail_path = clip_service.generate_thumbnail(clip.final_clip_path, clip.id)
+    clip.render_status = "ready"
+    db.commit()
