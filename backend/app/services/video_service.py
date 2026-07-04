@@ -236,6 +236,10 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
     """
     video_id = _extract_video_id(url)
 
+    e1_err = "Not attempted"
+    e2_err = "Not attempted"
+    e3_err = "Not attempted"
+
     # Strategy 1: Standard yt-dlp with android client
     if logger:
         logger.info(f"Strategy 1: yt-dlp android client for video_id={video_id}")
@@ -245,6 +249,7 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
             logger.info(f"Strategy 1 succeeded: {result['title']}")
         return result
     except Exception as e1:
+        e1_err = str(e1)
         if logger:
             logger.warn(f"Strategy 1 failed: {e1}")
 
@@ -263,6 +268,7 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
             logger.info(f"Strategy 2 succeeded: {result['title']}")
         return result
     except Exception as e2:
+        e2_err = str(e2)
         if logger:
             logger.warn(f"Strategy 2 failed: {e2}")
 
@@ -275,15 +281,16 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
             logger.info(f"Strategy 3 succeeded: {result['title']}")
         return result
     except Exception as e3:
+        e3_err = str(e3)
         if logger:
             logger.warn(f"Strategy 3 failed: {e3}")
 
     # All strategies failed
     raise RuntimeError(
         f"All download strategies failed for {url}.\n"
-        f"Strategy 1 (android): {e1}\n"
-        f"Strategy 2 (ios/vr): {e2}\n"
-        f"Strategy 3 (API+stream): {e3}\n"
+        f"Strategy 1 (android): {e1_err}\n"
+        f"Strategy 2 (ios/vr): {e2_err}\n"
+        f"Strategy 3 (API+stream): {e3_err}\n"
         "This usually means YouTube is blocking downloads from this server's IP address. "
         "Consider using a proxy or accepting video file uploads instead."
     )
