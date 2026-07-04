@@ -33,7 +33,7 @@ export default function CreateClipPage() {
     }
   }
 
-  const isProcessing = job && job.status !== 'completed' && job.status !== 'failed'
+  const isProcessing = job && job.status !== 'completed'
   const isDone = job && job.status === 'completed'
 
   return (
@@ -98,6 +98,18 @@ export default function CreateClipPage() {
             currentLabel={job.current_step_label}
             errorMessage={job.status === 'failed' ? job.error_message : null}
           />
+          {job.status === 'failed' && (
+            <Button
+              variant="secondary"
+              className="mt-6"
+              onClick={() => {
+                setJobId(null)
+                setUrl('')
+              }}
+            >
+              Try Another Video
+            </Button>
+          )}
         </div>
       )}
 
