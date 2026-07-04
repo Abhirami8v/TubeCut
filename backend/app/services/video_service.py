@@ -20,9 +20,41 @@ from typing import TypedDict
 
 import yt_dlp
 
-from app.core.config import DOWNLOADS_DIR, YOUTUBE_DATA_API_KEY
+from app.core.config import DOWNLOADS_DIR, YOUTUBE_DATA_API_KEY, COOKIES_FILE, YT_DLP_PROXY, YT_DLP_PO_TOKEN
 from app.core.logging_utils import JobLogger
 from app.services.ffmpeg_utils import run_ffmpeg
+
+
+def _build_ydl_opts(base_opts: dict, logger: JobLogger | None = None) -> dict:
+    ydl_opts = base_opts.copy()
+    
+    if COOKIES_FILE:
+        ydl_opts["cookiefile"] = COOKIES_FILE
+        if logger:
+            logger.info(f"Using cookies file: {COOKIES_FILE}")
+            
+    if YT_DLP_PROXY:
+        ydl_opts["proxy"] = YT_DLP_PROXY
+        if logger:
+            logger.info(f"Using proxy: {YT_DLP_PROXY}")
+
+    if YT_DLP_PO_TOKEN:
+        if "extractor_args" not in ydl_opts:
+            ydl_opts["extractor_args"] = {}
+        if "youtube" not in ydl_opts["extractor_args"]:
+            ydl_opts["extractor_args"]["youtube"] = {}
+        
+        ydl_opts["extractor_args"]["youtube"]["po_token"] = YT_DLP_PO_TOKEN
+        # If PO token is used, web client is often necessary
+        if "player_client" not in ydl_opts["extractor_args"]["youtube"]:
+            ydl_opts["extractor_args"]["youtube"]["player_client"] = ["web", "android"]
+        elif "web" not in ydl_opts["extractor_args"]["youtube"]["player_client"]:
+            ydl_opts["extractor_args"]["youtube"]["player_client"].append("web")
+            
+        if logger:
+            logger.info("Using configured PO Token for yt-dlp")
+            
+    return ydl_opts
 
 
 class DownloadResult(TypedDict):
@@ -99,7 +131,7 @@ def _download_with_ytdlp(
     logger: JobLogger | None = None
 ) -> dict:
     """Try downloading with yt-dlp, returns info dict or raises."""
-    ydl_opts = {
+    base_opts = {
         "outtmpl": str(DOWNLOADS_DIR / "%(id)s.%(ext)s"),
         "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
         "merge_output_format": "mp4",
@@ -114,7 +146,21 @@ def _download_with_ytdlp(
     }
 
     if extra_opts:
-        ydl_opts.update(extra_opts)
+        # Merge dictionary objects like extractor_args instead of simple overwrite
+        if "extractor_args" in extra_opts and "extractor_args" in base_opts:
+            for k, v in extra_opts["extractor_args"].items():
+                if k in base_opts["extractor_args"]:
+                    base_opts["extractor_args"][k].update(v)
+                else:
+                    base_opts["extractor_args"][k] = v
+            # Copy other keys
+            for k, v in extra_opts.items():
+                if k != "extractor_args":
+                    base_opts[k] = v
+        else:
+            base_opts.update(extra_opts)
+
+    ydl_opts = _build_ydl_opts(base_opts, logger=logger)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -148,7 +194,7 @@ def _download_via_api_stream(
     api_info = _get_video_info_from_api(video_id, logger=logger)
 
     # Use yt-dlp with aggressive client fallbacks just for downloading
-    ydl_opts = {
+    base_opts = {
         "outtmpl": str(DOWNLOADS_DIR / "%(id)s.%(ext)s"),
         "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
         "merge_output_format": "mp4",
@@ -165,6 +211,8 @@ def _download_via_api_stream(
             "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36",
         },
     }
+
+    ydl_opts = _build_ydl_opts(base_opts, logger=logger)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)

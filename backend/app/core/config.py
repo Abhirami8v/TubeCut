@@ -61,6 +61,32 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 YOUTUBE_DATA_API_KEY = os.getenv("YOUTUBE_DATA_API_KEY", "")
 
+# yt-dlp configurations to bypass cloud host IP blocking
+YT_DLP_COOKIES_CONTENT = os.getenv("YT_DLP_COOKIES_CONTENT", "")
+YT_DLP_COOKIES_PATH = os.getenv("YT_DLP_COOKIES_PATH", "")
+YT_DLP_PROXY = os.getenv("YT_DLP_PROXY", "")
+YT_DLP_PO_TOKEN = os.getenv("YT_DLP_PO_TOKEN", "")
+
+COOKIES_FILE = None
+if YT_DLP_COOKIES_CONTENT:
+    cookies_file_path = STORAGE_DIR / "cookies.txt"
+    try:
+        cookies_file_path.write_text(YT_DLP_COOKIES_CONTENT, encoding="utf-8")
+        COOKIES_FILE = str(cookies_file_path)
+    except Exception as e:
+        print(f"Failed to write YT_DLP_COOKIES_CONTENT to file: {e}")
+elif YT_DLP_COOKIES_PATH:
+    COOKIES_FILE = YT_DLP_COOKIES_PATH
+else:
+    # Auto-detect cookies.txt in storage/ or backend root
+    local_cookies = STORAGE_DIR / "cookies.txt"
+    if local_cookies.exists():
+        COOKIES_FILE = str(local_cookies)
+    else:
+        root_cookies = BACKEND_DIR / "cookies.txt"
+        if root_cookies.exists():
+            COOKIES_FILE = str(root_cookies)
+
 TRANSCRIPTION_ENGINE = os.getenv("TRANSCRIPTION_ENGINE", "gemini").lower()
 
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
