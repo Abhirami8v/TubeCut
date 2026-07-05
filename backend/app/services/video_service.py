@@ -233,62 +233,64 @@ def _download_with_ffmpeg_direct(
 
 def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
     """
-    Download YouTube video with multiple fallback strategies.
-
-    Strategy order:
-    1. yt-dlp with android client
-    2. yt-dlp with ios client
-    3. yt-dlp with android_vr client
-    4. yt-dlp with android_testsuite client
-    5. ffmpeg direct stream (get URL via yt-dlp, download via ffmpeg)
-
-    YouTube Data API v3 is used for reliable metadata (title, duration)
-    regardless of which download strategy succeeds.
+    Download YouTube video using pytubefix.
+    Works on cloud servers without IP blocking issues.
     """
-    video_id = _extract_video_id(url)
+    from pytubefix import YouTube
+    from pytubefix.cli import on_progress
 
-    # Always get metadata from YouTube Data API first
-    # (reliable, never blocked, gives us title + duration)
+    if logger:
+        logger.info(f"Downloading via pytubefix: {url}")
+
     try:
-        metadata = _get_video_metadata(video_id, logger=logger)
+        yt = YouTube(url, on_progress_callback=on_progress, use_oauth=False, allow_oauth_cache=True)
+        
+        title = yt.title
+        duration = float(yt.length or 0)
+        video_id = yt.video_id
+
+        if logger:
+            logger.info(f"Video found: '{title}' ({duration:.0f}s)")
+
+        # Get best stream
+        stream = (
+            yt.streams
+            .filter(progressive=True, file_extension="mp4")
+            .order_by("resolution")
+            .last()
+        )
+
+        if not stream:
+            # Fallback to any mp4
+            stream = yt.streams.filter(file_extension="mp4").first()
+
+        if not stream:
+            raise RuntimeError("No downloadable stream found")
+
+        output_path = DOWNLOADS_DIR / f"{video_id}.mp4"
+
+        if logger:
+            logger.info(f"Downloading stream: {stream.resolution} to {output_path}")
+
+        stream.download(
+            output_path=str(DOWNLOADS_DIR),
+            filename=f"{video_id}.mp4"
+        )
+
+        if logger:
+            logger.info(f"Download complete: {output_path}")
+
+        return {
+            "video_id": video_id,
+            "title": title,
+            "file_path": str(output_path),
+            "duration": duration,
+        }
+
     except Exception as e:
         if logger:
-            logger.warn(f"YouTube Data API metadata failed: {e}, will use yt-dlp metadata")
-        metadata = None
-
-    # Strategy 1-4: Try yt-dlp with different clients
-    try:
-        result = _download_with_ytdlp(url, logger=logger)
-        # Use API metadata if available (more reliable title)
-        if metadata:
-            result["title"] = metadata["title"]
-            result["duration"] = metadata["duration"] or result["duration"]
-        return result
-    except Exception as e1:
-        if logger:
-            logger.warn(f"All yt-dlp strategies failed: {e1}")
-
-    # Strategy 5: ffmpeg direct stream
-    if metadata is None:
-        metadata = {"title": "Unknown Video", "duration": 0.0}
-
-    try:
-        result = _download_with_ffmpeg_direct(url, video_id, metadata, logger=logger)
-        return result
-    except Exception as e2:
-        if logger:
-            logger.error(f"ffmpeg direct stream also failed: {e2}")
-
-    raise RuntimeError(
-        f"Cannot download video from YouTube on this server.\n"
-        f"YouTube is blocking all download attempts from this IP.\n"
-        f"yt-dlp error: {e1}\n"
-        f"ffmpeg error: {e2}\n"
-        "Solutions:\n"
-        "1. Use a residential proxy (webshare.io)\n"
-        "2. Run backend on Google Colab\n"
-        "3. Allow video file uploads"
-    )
+            logger.error(f"pytubefix failed: {e}")
+        raise RuntimeError(f"Could not download video: {e}")
 
 
 def probe_duration(file_path: str, logger: JobLogger | None = None) -> float:
