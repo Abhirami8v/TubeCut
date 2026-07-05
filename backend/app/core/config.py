@@ -71,7 +71,31 @@ COOKIES_FILE = None
 if YT_DLP_COOKIES_CONTENT:
     cookies_file_path = STORAGE_DIR / "cookies.txt"
     try:
-        cookies_file_path.write_text(YT_DLP_COOKIES_CONTENT, encoding="utf-8")
+        # Auto-repair spaces to tabs if copy-pasted incorrectly
+        lines = []
+        for line in YT_DLP_COOKIES_CONTENT.strip().splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                lines.append(line)
+                continue
+            
+            parts = stripped.split()
+            if len(parts) >= 7:
+                domain = parts[0]
+                flag = parts[1]
+                path = parts[2]
+                secure = parts[3]
+                expiration = parts[4]
+                name = parts[5]
+                value = " ".join(parts[6:])
+                lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}")
+            else:
+                lines.append(line)
+                
+        standardized_content = "\n".join(lines)
+        cookies_file_path.write_text(standardized_content, encoding="utf-8")
         COOKIES_FILE = str(cookies_file_path)
     except Exception as e:
         print(f"Failed to write YT_DLP_COOKIES_CONTENT to file: {e}")
