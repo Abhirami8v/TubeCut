@@ -30,6 +30,7 @@ from app.services import (
     hook_score_service,
     reframe_service,
     style_service,
+    transcription_router,
     transcription_service,
     video_service,
 )
@@ -97,8 +98,8 @@ def _run_pipeline_inner(
     db.commit()
 
     # --- Step 3: transcribe --------------------------------------------------
-    _update_job(db, job, status=JobStatus.TRANSCRIBING, progress=35, label="Transcribing with Whisper")
-    transcript = transcription_service.transcribe_audio(audio_path)
+    _update_job(db, job, status=JobStatus.TRANSCRIBING, progress=35, label="Transcribing speech")
+    transcript = transcription_router.transcribe(audio_path, logger=logger)
     job.transcript_json = json.dumps(transcript)
     db.commit()
 
