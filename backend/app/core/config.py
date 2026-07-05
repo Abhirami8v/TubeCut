@@ -60,7 +60,7 @@ CORS_ORIGINS = [
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 YOUTUBE_DATA_API_KEY = os.getenv("YOUTUBE_DATA_API_KEY", "")
-
+PROXY_URL = os.getenv("PROXY_URL", "")
 # yt-dlp configurations to bypass cloud host IP blocking
 YT_DLP_COOKIES_CONTENT = os.getenv("YT_DLP_COOKIES_CONTENT", "")
 YT_DLP_COOKIES_PATH = os.getenv("YT_DLP_COOKIES_PATH", "")

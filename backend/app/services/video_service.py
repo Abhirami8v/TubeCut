@@ -232,19 +232,32 @@ def _download_with_ffmpeg_direct(
 
 
 def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
-    """
-    Download YouTube video using pytubefix.
-    Works on cloud servers without IP blocking issues.
-    """
     from pytubefix import YouTube
     from pytubefix.cli import on_progress
+    from app.core.config import PROXY_URL
 
     if logger:
         logger.info(f"Downloading via pytubefix: {url}")
 
     try:
-        yt = YouTube(url, on_progress_callback=on_progress, use_oauth=False, allow_oauth_cache=True)
-        
+        # Build proxies dict if proxy is configured
+        proxies = None
+        if PROXY_URL:
+            proxies = {
+                "http": PROXY_URL,
+                "https": PROXY_URL,
+            }
+            if logger:
+                logger.info(f"Using proxy: {PROXY_URL}")
+
+        yt = YouTube(
+            url,
+            on_progress_callback=on_progress,
+            use_oauth=False,
+            allow_oauth_cache=True,
+            proxies=proxies,
+        )
+
         title = yt.title
         duration = float(yt.length or 0)
         video_id = yt.video_id
@@ -252,7 +265,7 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
         if logger:
             logger.info(f"Video found: '{title}' ({duration:.0f}s)")
 
-        # Get best stream
+        # Get best progressive stream (video + audio combined)
         stream = (
             yt.streams
             .filter(progressive=True, file_extension="mp4")
@@ -261,16 +274,15 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
         )
 
         if not stream:
-            # Fallback to any mp4
             stream = yt.streams.filter(file_extension="mp4").first()
 
         if not stream:
             raise RuntimeError("No downloadable stream found")
 
-        output_path = DOWNLOADS_DIR / f"{video_id}.mp4"
-
         if logger:
-            logger.info(f"Downloading stream: {stream.resolution} to {output_path}")
+            logger.info(f"Downloading: {stream.resolution}")
+
+        output_path = DOWNLOADS_DIR / f"{video_id}.mp4"
 
         stream.download(
             output_path=str(DOWNLOADS_DIR),
