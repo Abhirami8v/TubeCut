@@ -1,76 +1,25 @@
 """
 video_service.py
 
-Downloads YouTube videos using yt-dlp with multiple fallback strategies
-to handle cloud server IP blocking by YouTube.
-
-Strategy order:
-1. Try yt-dlp with android client (works on most servers)
-2. Try yt-dlp with web client + po_token workaround
-3. Try YouTube Data API v3 to get direct stream URL
-4. Raise clear error explaining the situation
+Downloads YouTube videos using YouTube Data API v3 to get
+stream URLs, then ffmpeg to download directly.
+This bypasses yt-dlp's YouTube blocking issues on cloud servers.
 """
 
 from __future__ import annotations
-import os
-import tempfile
+
 import json
+import os
+import re
 import subprocess
 import urllib.request
+import urllib.parse
+from pathlib import Path
 from typing import TypedDict
 
-import yt_dlp
-
-from app.core.config import DOWNLOADS_DIR, YOUTUBE_DATA_API_KEY, COOKIES_FILE, YT_DLP_PROXY, YT_DLP_PO_TOKEN
+from app.core.config import DOWNLOADS_DIR, YOUTUBE_DATA_API_KEY
 from app.core.logging_utils import JobLogger
 from app.services.ffmpeg_utils import run_ffmpeg
-
-try:
-    from yt_dlp.networking.impersonate import ImpersonateTarget
-    HAS_IMPERSONATION = True
-except ImportError:
-    HAS_IMPERSONATION = False
-
-
-def _build_ydl_opts(base_opts: dict, logger: JobLogger | None = None) -> dict:
-    ydl_opts = base_opts.copy()
-    
-    if COOKIES_FILE:
-        ydl_opts["cookiefile"] = COOKIES_FILE
-        if logger:
-            logger.info(f"Using cookies file: {COOKIES_FILE}")
-            
-    if YT_DLP_PROXY:
-        ydl_opts["proxy"] = YT_DLP_PROXY
-        if logger:
-            logger.info(f"Using proxy: {YT_DLP_PROXY}")
-
-    if YT_DLP_PO_TOKEN:
-        if "extractor_args" not in ydl_opts:
-            ydl_opts["extractor_args"] = {}
-        if "youtube" not in ydl_opts["extractor_args"]:
-            ydl_opts["extractor_args"]["youtube"] = {}
-        
-        ydl_opts["extractor_args"]["youtube"]["po_token"] = YT_DLP_PO_TOKEN
-        # If PO token is used, web client is often necessary
-        if "player_client" not in ydl_opts["extractor_args"]["youtube"]:
-            ydl_opts["extractor_args"]["youtube"]["player_client"] = ["web", "android"]
-        elif "web" not in ydl_opts["extractor_args"]["youtube"]["player_client"]:
-            ydl_opts["extractor_args"]["youtube"]["player_client"].append("web")
-            
-        if logger:
-            logger.info("Using configured PO Token for yt-dlp")
-            
-    if HAS_IMPERSONATION:
-        try:
-            ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome-116:windows-10")
-            if logger:
-                logger.info("Impersonating browser client: chrome-116:windows-10")
-        except Exception as e:
-            if logger:
-                logger.warn(f"Failed to set impersonate target: {e}")
-
-    return ydl_opts
 
 
 class DownloadResult(TypedDict):
@@ -81,25 +30,24 @@ class DownloadResult(TypedDict):
 
 
 def _extract_video_id(url: str) -> str:
-    """Extract YouTube video ID from various URL formats."""
-    import re
+    """Extract YouTube video ID from any YouTube URL format."""
     patterns = [
-        r'(?:v=|/v/|youtu\.be/|/embed/)([^&?\n]+)',
-        r'(?:youtube\.com/shorts/)([^&?\n]+)',
+        r'(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([^&?\n/]+)',
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
-            return match.group(1)
-    raise ValueError(f"Could not extract video ID from URL: {url}")
+            return match.group(1).strip()
+    raise ValueError(f"Could not extract video ID from: {url}")
 
 
-def _get_video_info_from_api(video_id: str, logger: JobLogger | None = None) -> dict:
-    """
-    Get video metadata (title, duration) from YouTube Data API v3.
-    """
+def _get_video_metadata(video_id: str, logger: JobLogger | None = None) -> dict:
+    """Get video title and duration from YouTube Data API v3."""
     if not YOUTUBE_DATA_API_KEY:
-        raise RuntimeError("YOUTUBE_DATA_API_KEY is not set in environment variables")
+        raise RuntimeError(
+            "YOUTUBE_DATA_API_KEY is not set. "
+            "Get one from https://console.cloud.google.com"
+        )
 
     api_url = (
         f"https://www.googleapis.com/youtube/v3/videos"
@@ -109,30 +57,34 @@ def _get_video_info_from_api(video_id: str, logger: JobLogger | None = None) -> 
     )
 
     if logger:
-        logger.debug(f"Fetching video info from YouTube Data API for video_id={video_id}")
+        logger.info(f"Fetching metadata from YouTube Data API for {video_id}")
 
-    with urllib.request.urlopen(api_url) as response:
-        data = json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(api_url, timeout=30) as response:
+            data = json.loads(response.read().decode())
+    except Exception as e:
+        raise RuntimeError(f"YouTube Data API request failed: {e}")
 
     items = data.get("items", [])
     if not items:
-        raise RuntimeError(f"Video {video_id} not found via YouTube Data API")
+        raise RuntimeError(
+            f"Video {video_id} not found. "
+            "It may be private, deleted, or region restricted."
+        )
 
     item = items[0]
     title = item["snippet"]["title"]
+    duration = _parse_iso_duration(item["contentDetails"]["duration"])
 
-    # Parse ISO 8601 duration (PT1H2M3S format)
-    duration_str = item["contentDetails"]["duration"]
-    duration = _parse_iso_duration(duration_str)
+    if logger:
+        logger.info(f"Video found: '{title}' ({duration:.0f}s)")
 
     return {"title": title, "duration": duration}
 
 
 def _parse_iso_duration(duration_str: str) -> float:
-    """Convert ISO 8601 duration (PT1H2M3S) to seconds."""
-    import re
-    pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
-    match = re.match(pattern, duration_str)
+    """Convert ISO 8601 duration PT1H2M3S to seconds."""
+    match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
     if not match:
         return 0.0
     hours = int(match.group(1) or 0)
@@ -141,214 +93,207 @@ def _parse_iso_duration(duration_str: str) -> float:
     return float(hours * 3600 + minutes * 60 + seconds)
 
 
-def _download_with_ytdlp(
-    url: str,
-    extra_opts: dict | None = None,
-    logger: JobLogger | None = None
-) -> dict:
-    """Try downloading with yt-dlp, returns info dict or raises."""
-    base_opts = {
-        "outtmpl": str(DOWNLOADS_DIR / "%(id)s.%(ext)s"),
-        "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
+def _download_with_ytdlp(url: str, logger: JobLogger | None = None) -> dict:
+    """Try yt-dlp with multiple client strategies."""
+    import yt_dlp
+
+    strategies = [
+        {
+            "extractor_args": {
+                "youtube": {"player_client": ["android"]}
             }
         },
-    }
+        {
+            "extractor_args": {
+                "youtube": {"player_client": ["ios"]}
+            }
+        },
+        {
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android_vr"],
+                    "player_skip": ["webpage"],
+                }
+            }
+        },
+        {
+            "extractor_args": {
+                "youtube": {"player_client": ["android_testsuite"]}
+            }
+        },
+    ]
 
-    if extra_opts:
-        # Merge dictionary objects like extractor_args instead of simple overwrite
-        if "extractor_args" in extra_opts and "extractor_args" in base_opts:
-            for k, v in extra_opts["extractor_args"].items():
-                if k in base_opts["extractor_args"]:
-                    base_opts["extractor_args"][k].update(v)
-                else:
-                    base_opts["extractor_args"][k] = v
-            # Copy other keys
-            for k, v in extra_opts.items():
-                if k != "extractor_args":
-                    base_opts[k] = v
-        else:
-            base_opts.update(extra_opts)
+    video_id = _extract_video_id(url)
+    output_path = DOWNLOADS_DIR / f"{video_id}.mp4"
 
-    ydl_opts = _build_ydl_opts(base_opts, logger=logger)
+    last_error = None
+    for i, strategy in enumerate(strategies):
+        if logger:
+            logger.info(f"yt-dlp strategy {i+1}/{len(strategies)}: {strategy['extractor_args']['youtube']['player_client']}")
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        file_path = ydl.prepare_filename(info)
-        if not file_path.endswith(".mp4"):
-            base = file_path.rpartition(".")[0]
-            file_path = f"{base}.mp4"
+        ydl_opts = {
+            "outtmpl": str(DOWNLOADS_DIR / "%(id)s.%(ext)s"),
+            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
+            "merge_output_format": "mp4",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            **strategy,
+        }
 
-    return {
-        "video_id": info["id"],
-        "title": info.get("title", "Untitled"),
-        "file_path": file_path,
-        "duration": float(info.get("duration") or 0.0),
-    }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                file_path = ydl.prepare_filename(info)
+                if not file_path.endswith(".mp4"):
+                    base = file_path.rpartition(".")[0]
+                    file_path = f"{base}.mp4"
+
+            if logger:
+                logger.info(f"yt-dlp strategy {i+1} succeeded")
+
+            return {
+                "video_id": info["id"],
+                "title": info.get("title", "Untitled"),
+                "file_path": file_path,
+                "duration": float(info.get("duration") or 0.0),
+            }
+        except Exception as e:
+            last_error = e
+            if logger:
+                logger.warn(f"yt-dlp strategy {i+1} failed: {e}")
+            continue
+
+    raise RuntimeError(f"All yt-dlp strategies failed. Last error: {last_error}")
 
 
-def _download_via_api_stream(
+def _download_with_ffmpeg_direct(
     url: str,
     video_id: str,
-    logger: JobLogger | None = None
+    metadata: dict,
+    logger: JobLogger | None = None,
 ) -> DownloadResult:
     """
-    Get video info from YouTube Data API, then use yt-dlp just for
-    the actual stream extraction (more reliable on cloud servers than
-    full yt-dlp metadata extraction).
+    Use yt-dlp ONLY to get the direct stream URL (no download),
+    then use ffmpeg to download it directly.
+    This sometimes works when yt-dlp download is blocked.
     """
+    import yt_dlp
+
     if logger:
-        logger.info("Trying YouTube Data API strategy for metadata + yt-dlp for stream")
+        logger.info("Trying ffmpeg direct stream download strategy")
 
-    # Get metadata from API
-    api_info = _get_video_info_from_api(video_id, logger=logger)
-
-    # Use yt-dlp with aggressive client fallbacks just for downloading
-    base_opts = {
-        "outtmpl": str(DOWNLOADS_DIR / "%(id)s.%(ext)s"),
-        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
-        "merge_output_format": "mp4",
+    ydl_opts = {
+        "format": "best[height<=720][ext=mp4]/best[height<=720]/best",
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "skip_download": True,  # Don't download, just get URL
         "extractor_args": {
-            "youtube": {
-                "player_client": ["android_vr", "android", "ios", "web"],
-                "player_skip": ["webpage"],
-            }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36",
+            "youtube": {"player_client": ["android", "ios"]}
         },
     }
 
-    ydl_opts = _build_ydl_opts(base_opts, logger=logger)
-
+    stream_url = None
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        file_path = ydl.prepare_filename(info)
-        if not file_path.endswith(".mp4"):
-            base = file_path.rpartition(".")[0]
-            file_path = f"{base}.mp4"
+        info = ydl.extract_info(url, download=False)
+        stream_url = info.get("url")
+        if not stream_url and info.get("formats"):
+            # Pick best format
+            formats = [f for f in info["formats"] if f.get("url")]
+            if formats:
+                stream_url = formats[-1]["url"]
+
+    if not stream_url:
+        raise RuntimeError("Could not extract stream URL")
+
+    output_path = DOWNLOADS_DIR / f"{video_id}.mp4"
+
+    command = [
+        "ffmpeg", "-y",
+        "-user_agent", "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36",
+        "-i", stream_url,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+
+    if logger:
+        logger.info(f"Downloading stream via ffmpeg to {output_path}")
+
+    run_ffmpeg(command, logger=logger, label="ffmpeg_stream_download")
 
     return {
         "video_id": video_id,
-        "title": api_info["title"],
-        "file_path": file_path,
-        "duration": api_info["duration"] or float(info.get("duration") or 0.0),
+        "title": metadata["title"],
+        "file_path": str(output_path),
+        "duration": metadata["duration"],
     }
 
 
 def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
     """
     Download YouTube video with multiple fallback strategies.
-    Tries each strategy in order until one succeeds.
+
+    Strategy order:
+    1. yt-dlp with android client
+    2. yt-dlp with ios client
+    3. yt-dlp with android_vr client
+    4. yt-dlp with android_testsuite client
+    5. ffmpeg direct stream (get URL via yt-dlp, download via ffmpeg)
+
+    YouTube Data API v3 is used for reliable metadata (title, duration)
+    regardless of which download strategy succeeds.
     """
     video_id = _extract_video_id(url)
 
-    e1_err = "Not attempted"
-    e2_err = "Not attempted"
-    e3_err = "Not attempted"
+    # Always get metadata from YouTube Data API first
+    # (reliable, never blocked, gives us title + duration)
+    try:
+        metadata = _get_video_metadata(video_id, logger=logger)
+    except Exception as e:
+        if logger:
+            logger.warn(f"YouTube Data API metadata failed: {e}, will use yt-dlp metadata")
+        metadata = None
 
-    # Strategy 1: Standard yt-dlp with android client
-    if logger:
-        logger.info(f"Strategy 1: yt-dlp android client for video_id={video_id}")
+    # Strategy 1-4: Try yt-dlp with different clients
     try:
         result = _download_with_ytdlp(url, logger=logger)
-        if logger:
-            logger.info(f"Strategy 1 succeeded: {result['title']}")
+        # Use API metadata if available (more reliable title)
+        if metadata:
+            result["title"] = metadata["title"]
+            result["duration"] = metadata["duration"] or result["duration"]
         return result
     except Exception as e1:
-        e1_err = str(e1)
         if logger:
-            logger.warn(f"Strategy 1 failed: {e1}")
+            logger.warn(f"All yt-dlp strategies failed: {e1}")
 
-    # Strategy 2: yt-dlp with different player clients
-    if logger:
-        logger.info("Strategy 2: yt-dlp with ios + android_vr clients")
+    # Strategy 5: ffmpeg direct stream
+    if metadata is None:
+        metadata = {"title": "Unknown Video", "duration": 0.0}
+
     try:
-        result = _download_with_ytdlp(url, extra_opts={
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["ios", "android_vr", "android_testsuite"],
-                }
-            }
-        }, logger=logger)
-        if logger:
-            logger.info(f"Strategy 2 succeeded: {result['title']}")
+        result = _download_with_ffmpeg_direct(url, video_id, metadata, logger=logger)
         return result
     except Exception as e2:
-        e2_err = str(e2)
         if logger:
-            logger.warn(f"Strategy 2 failed: {e2}")
-
-    # Strategy 3: YouTube Data API + yt-dlp stream
-    if logger:
-        logger.info("Strategy 3: YouTube Data API + yt-dlp stream extraction")
-    try:
-        result = _download_via_api_stream(url, video_id, logger=logger)
-        if logger:
-            logger.info(f"Strategy 3 succeeded: {result['title']}")
-        return result
-    except Exception as e3:
-        e3_err = str(e3)
-        if logger:
-            logger.warn(f"Strategy 3 failed: {e3}")
-
-    # Strategy 4: tv_embedded client (sometimes works without cookies on cloud IPs)
-    if logger:
-        logger.info("Strategy 4: yt-dlp tv_embedded client")
-    try:
-        result = _download_with_ytdlp(url, extra_opts={
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["tv_embedded", "tv", "android"],
-                    "player_skip": ["webpage", "configs"],
-                }
-            }
-        }, logger=logger)
-        if logger:
-            logger.info(f"Strategy 4 succeeded: {result['title']}")
-        return result
-    except Exception as e4:
-        e4_err = str(e4)
-        if logger:
-            logger.warn(f"Strategy 4 failed: {e4}")
-
-    # All strategies failed
-    bot_block = any(
-        "not a bot" in err.lower() or "sign in" in err.lower()
-        for err in (e1_err, e2_err, e3_err, e4_err)
-    )
-    if bot_block and not COOKIES_FILE:
-        raise RuntimeError(
-            "YouTube blocked this server's IP (bot check). "
-            "Set YT_DLP_COOKIES_CONTENT on Render with your browser's YouTube cookies. "
-            "Export with: yt-dlp --cookies-from-browser chrome --cookies cookies.txt https://youtube.com"
-        )
+            logger.error(f"ffmpeg direct stream also failed: {e2}")
 
     raise RuntimeError(
-        f"All download strategies failed for {url}.\n"
-        f"Strategy 1 (android): {e1_err}\n"
-        f"Strategy 2 (ios/vr): {e2_err}\n"
-        f"Strategy 3 (API+stream): {e3_err}\n"
-        f"Strategy 4 (tv_embedded): {e4_err}\n"
-        "This usually means YouTube is blocking downloads from this server's IP address. "
-        "Add YT_DLP_COOKIES_CONTENT on Render, or use a residential proxy via YT_DLP_PROXY."
+        f"Cannot download video from YouTube on this server.\n"
+        f"YouTube is blocking all download attempts from this IP.\n"
+        f"yt-dlp error: {e1}\n"
+        f"ffmpeg error: {e2}\n"
+        "Solutions:\n"
+        "1. Use a residential proxy (webshare.io)\n"
+        "2. Run backend on Google Colab\n"
+        "3. Allow video file uploads"
     )
 
 
 def probe_duration(file_path: str, logger: JobLogger | None = None) -> float:
-    """Return the duration (seconds) of a media file via ffprobe."""
     command = [
-        "ffprobe",
-        "-v", "error",
+        "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
         "-of", "json",
         file_path,
@@ -359,10 +304,8 @@ def probe_duration(file_path: str, logger: JobLogger | None = None) -> float:
 
 
 def probe_dimensions(file_path: str, logger: JobLogger | None = None) -> tuple[int, int]:
-    """Return (width, height) of the first video stream."""
     command = [
-        "ffprobe",
-        "-v", "error",
+        "ffprobe", "-v", "error",
         "-select_streams", "v:0",
         "-show_entries", "stream=width,height",
         "-of", "json",
@@ -377,10 +320,8 @@ def probe_dimensions(file_path: str, logger: JobLogger | None = None) -> tuple[i
 
 
 def probe_fps(file_path: str, logger: JobLogger | None = None) -> float:
-    """Return the frame rate of the first video stream."""
     command = [
-        "ffprobe",
-        "-v", "error",
+        "ffprobe", "-v", "error",
         "-select_streams", "v:0",
         "-show_entries", "stream=r_frame_rate",
         "-of", "json",
