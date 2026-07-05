@@ -17,7 +17,7 @@ def transcribe(audio_path: str, logger: JobLogger | None = None) -> List[Transcr
         if logger:
             logger.info("Transcription engine: Whisper")
         from app.services import transcription_service
-        return transcription_service.transcribe_audio(audio_path, logger=logger)
+        return transcription_service.transcribe_audio(audio_path)
 
     if logger:
         logger.info("Transcription engine: Gemini")
@@ -29,4 +29,4 @@ def transcribe(audio_path: str, logger: JobLogger | None = None) -> List[Transcr
         if logger:
             logger.error(f"Gemini transcription failed ({exc}), falling back to Whisper")
         from app.services import transcription_service
-        return transcription_service.transcribe_audio(audio_path, logger=logger)
+        return transcription_service.transcribe_audio(audio_path)
