@@ -25,6 +25,12 @@ from app.core.config import DOWNLOADS_DIR, YOUTUBE_DATA_API_KEY, COOKIES_FILE, Y
 from app.core.logging_utils import JobLogger
 from app.services.ffmpeg_utils import run_ffmpeg
 
+try:
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+    HAS_IMPERSONATION = True
+except ImportError:
+    HAS_IMPERSONATION = False
+
 
 def _build_ydl_opts(base_opts: dict, logger: JobLogger | None = None) -> dict:
     ydl_opts = base_opts.copy()
@@ -55,6 +61,15 @@ def _build_ydl_opts(base_opts: dict, logger: JobLogger | None = None) -> dict:
         if logger:
             logger.info("Using configured PO Token for yt-dlp")
             
+    if HAS_IMPERSONATION:
+        try:
+            ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome-116:windows-10")
+            if logger:
+                logger.info("Impersonating browser client: chrome-116:windows-10")
+        except Exception as e:
+            if logger:
+                logger.warn(f"Failed to set impersonate target: {e}")
+
     return ydl_opts
 
 
