@@ -12,7 +12,8 @@ Strategy order:
 """
 
 from __future__ import annotations
-
+import os
+import tempfile
 import json
 import subprocess
 import urllib.request
@@ -285,14 +286,46 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
         if logger:
             logger.warn(f"Strategy 3 failed: {e3}")
 
+    # Strategy 4: tv_embedded client (sometimes works without cookies on cloud IPs)
+    if logger:
+        logger.info("Strategy 4: yt-dlp tv_embedded client")
+    try:
+        result = _download_with_ytdlp(url, extra_opts={
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["tv_embedded", "tv", "android"],
+                    "player_skip": ["webpage", "configs"],
+                }
+            }
+        }, logger=logger)
+        if logger:
+            logger.info(f"Strategy 4 succeeded: {result['title']}")
+        return result
+    except Exception as e4:
+        e4_err = str(e4)
+        if logger:
+            logger.warn(f"Strategy 4 failed: {e4}")
+
     # All strategies failed
+    bot_block = any(
+        "not a bot" in err.lower() or "sign in" in err.lower()
+        for err in (e1_err, e2_err, e3_err, e4_err)
+    )
+    if bot_block and not COOKIES_FILE:
+        raise RuntimeError(
+            "YouTube blocked this server's IP (bot check). "
+            "Set YT_DLP_COOKIES_CONTENT on Render with your browser's YouTube cookies. "
+            "Export with: yt-dlp --cookies-from-browser chrome --cookies cookies.txt https://youtube.com"
+        )
+
     raise RuntimeError(
         f"All download strategies failed for {url}.\n"
         f"Strategy 1 (android): {e1_err}\n"
         f"Strategy 2 (ios/vr): {e2_err}\n"
         f"Strategy 3 (API+stream): {e3_err}\n"
+        f"Strategy 4 (tv_embedded): {e4_err}\n"
         "This usually means YouTube is blocking downloads from this server's IP address. "
-        "Consider using a proxy or accepting video file uploads instead."
+        "Add YT_DLP_COOKIES_CONTENT on Render, or use a residential proxy via YT_DLP_PROXY."
     )
 
 

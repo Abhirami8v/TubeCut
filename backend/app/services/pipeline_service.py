@@ -16,6 +16,7 @@ import traceback
 from sqlalchemy.orm import Session
 
 from app.core.config import REFRAME_TARGET_HEIGHT, REFRAME_TARGET_WIDTH, TARGET_CLIP_COUNT
+from app.core.logging_utils import JobLogger
 from app.core.database import SessionLocal
 from app.models.caption import CaptionBlock
 from app.models.clip import Clip
@@ -82,7 +83,8 @@ def _run_pipeline_inner(
 ) -> None:
     # --- Step 1: download -------------------------------------------------
     _update_job(db, job, status=JobStatus.DOWNLOADING, progress=5, label="Downloading video")
-    download = video_service.download_video(url)
+    logger = JobLogger(job.id)
+    download = video_service.download_video(url, logger=logger)
     job.source_title = download["title"]
     job.source_duration = download["duration"] or video_service.probe_duration(download["file_path"])
     job.source_video_path = download["file_path"]

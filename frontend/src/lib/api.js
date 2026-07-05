@@ -6,10 +6,9 @@
  * FastAPI and strips the /api prefix.
  */
 
-const BASE = 
-  import.meta.env.PROD
-    ? "https://tubecut.onrender.com"
-    : "/api";
+const BASE =
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.PROD ? "https://tubecut.onrender.com" : "/api");
 
 export function downloadUrl(path) {
   if (!path) return null

@@ -47,12 +47,33 @@ export default function PipelineProgress({ steps, progressPercent, currentLabel,
       </ol>
 
       {errorMessage && (
-        <div className="mt-4 rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/10 px-4 py-3 text-sm text-[var(--color-danger)]">
-          {errorMessage}
+        <div className="mt-4 rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/10 px-4 py-3 text-sm text-[var(--color-danger)] space-y-2">
+          <p>{friendlyError(errorMessage)}</p>
+          {errorMessage.includes('YT_DLP_COOKIES_CONTENT') && (
+            <p className="text-xs opacity-90">
+              In Render → Environment, add <code className="font-mono">YT_DLP_COOKIES_CONTENT</code> with
+              your YouTube cookies file contents (export from Chrome while logged into YouTube).
+            </p>
+          )}
         </div>
       )}
     </div>
   )
+}
+
+function friendlyError(message) {
+  if (!message) return message
+  if (message.includes('not a bot') || message.includes('YT_DLP_COOKIES_CONTENT')) {
+    return 'YouTube blocked the server (bot check). Add your YouTube cookies to Render as YT_DLP_COOKIES_CONTENT, then redeploy.'
+  }
+  if (message.includes('GEMINI_API_KEY')) {
+    return 'Gemini API key is missing on the backend. Set GEMINI_API_KEY in Render environment variables.'
+  }
+  if (message.includes('ffmpeg')) {
+    return 'ffmpeg is not installed on the server. Redeploy with ffmpeg in the Render build command.'
+  }
+  const firstLine = message.split('\n')[0]
+  return firstLine.length > 220 ? `${firstLine.slice(0, 220)}…` : firstLine
 }
 
 function StepIcon({ state }) {

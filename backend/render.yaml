@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: tubecut-api
+    runtime: python
+    rootDir: backend
+    buildCommand: apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.13
+      - key: PUBLIC_BASE_URL
+        value: https://tubecut.onrender.com
+      - key: CORS_ORIGINS
+        value: https://tube-cut.vercel.app
+      - key: TRANSCRIPTION_ENGINE
+        value: gemini
+      # Required on Render — set these in the Render dashboard:
+      # GEMINI_API_KEY
+      # YT_DLP_COOKIES_CONTENT  (paste full Netscape cookies.txt contents)
