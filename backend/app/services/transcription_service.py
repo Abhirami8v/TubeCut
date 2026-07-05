@@ -63,7 +63,7 @@ def _transcribe_with_gemini(audio_path: str) -> List[TranscriptSegment]:
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     print(f"[transcription_service] Uploading audio file to Gemini...")
-    uploaded_file = client.files.upload(file=audio_path)
+    uploaded_file = client.files.upload(audio_path)
     
     try:
         prompt = """
