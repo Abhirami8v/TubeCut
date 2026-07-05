@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Link2, Sparkles, ArrowRight } from 'lucide-react'
 import { api } from '../lib/api'
@@ -9,13 +9,21 @@ import ClipCard from '../components/clips/ClipCard'
 
 export default function CreateClipPage() {
   const [url, setUrl] = useState('')
-  const [jobId, setJobId] = useState(null)
+  const [jobId, setJobId] = useState(() => localStorage.getItem('active_job_id'))
   const [submitError, setSubmitError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [autoReframe, setAutoReframe] = useState(true)
   const navigate = useNavigate()
 
   const { job, error: pollError } = useJobPolling(jobId)
+
+  useEffect(() => {
+    if (jobId) {
+      localStorage.setItem('active_job_id', jobId)
+    } else {
+      localStorage.removeItem('active_job_id')
+    }
+  }, [jobId])
 
   async function handleSubmit(e) {
     e.preventDefault()
