@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api import clips, jobs, library, styles
-from app.core.config import CORS_ORIGINS, STORAGE_DIR
+from app.core.config import COOKIES_FILE, GEMINI_API_KEY, STORAGE_DIR
 from app.core.database import init_db
 
 app = FastAPI(
@@ -63,3 +63,26 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/health/deployment")
+def deployment_health():
+    """Quick checklist for Render/Vercel deploy issues (no secrets exposed)."""
+    import shutil
+    from pathlib import Path
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    cookies_path = Path(COOKIES_FILE) if COOKIES_FILE else None
+
+    checks = {
+        "ffmpeg_installed": ffmpeg_path is not None,
+        "ffprobe_installed": ffprobe_path is not None,
+        "cookies_configured": bool(cookies_path and cookies_path.is_file()),
+        "gemini_key_configured": bool(GEMINI_API_KEY),
+        "youtube_download_ready": bool(
+            ffmpeg_path and cookies_path and cookies_path.is_file()
+        ),
+    }
+    checks["status"] = "ready" if checks["youtube_download_ready"] and checks["gemini_key_configured"] else "misconfigured"
+    return checks
