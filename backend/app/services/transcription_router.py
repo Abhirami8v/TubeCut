@@ -12,12 +12,18 @@ from app.core.logging_utils import JobLogger
 from app.services.transcript_utils import TranscriptSegment
 
 
-def transcribe(audio_path: str, logger: JobLogger | None = None) -> List[TranscriptSegment]:
+def transcribe_audio(
+    audio_path: str,
+    logger: None, 
+) -> List[TranscriptSegment]:
     if TRANSCRIPTION_ENGINE == "whisper":
         if logger:
             logger.info("Transcription engine: Whisper")
         from app.services import transcription_service
-        return transcription_service.transcribe_audio(audio_path)
+        return transcription_service.transcribe_audio(
+            audio_path,
+            logger=logger,
+            )
 
     if logger:
         logger.info("Transcription engine: Gemini")
@@ -27,6 +33,8 @@ def transcribe(audio_path: str, logger: JobLogger | None = None) -> List[Transcr
         return gemini_transcription_service.transcribe_audio(audio_path, logger=logger)
     except Exception as exc:
         if logger:
-            logger.error(f"Gemini transcription failed ({exc}), falling back to Whisper")
-        from app.services import transcription_service
-        return transcription_service.transcribe_audio(audio_path)
+            logger.error(f"Gemini transcription failed: {exc}")
+        # Do not fall back to Whisper on cloud hosts as it triggers OOM restarts
+        raise RuntimeError(
+            f"Gemini transcription failed: {exc}. Please verify that your GEMINI_API_KEY environment variable is valid."
+        )
