@@ -12,18 +12,12 @@ from app.core.logging_utils import JobLogger
 from app.services.transcript_utils import TranscriptSegment
 
 
-def transcribe_audio(
-    audio_path: str,
-    logger: None, 
-) -> List[TranscriptSegment]:
+def transcribe(audio_path: str, logger: JobLogger | None = None) -> List[TranscriptSegment]:
     if TRANSCRIPTION_ENGINE == "whisper":
         if logger:
             logger.info("Transcription engine: Whisper")
         from app.services import transcription_service
-        return transcription_service.transcribe_audio(
-            audio_path,
-            logger=logger,
-            )
+        return transcription_service.transcribe_audio(audio_path, logger=logger)
 
     if logger:
         logger.info("Transcription engine: Gemini")

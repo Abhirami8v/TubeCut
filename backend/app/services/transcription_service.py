@@ -131,8 +131,7 @@ def _transcribe_with_gemini(audio_path: str) -> List[TranscriptSegment]:
             print(f"[transcription_service] Failed to delete uploaded file from Gemini storage: {delete_exc}")
 
 
-def transcribe_audio(audio_path: str, 
-                     logger:None,) -> List[TranscriptSegment]:
+def transcribe_audio(audio_path: str, logger=None) -> List[TranscriptSegment]:
     """
     Transcribe the audio file at `audio_path` and return a list of
     segments, each with word-level timestamps.
