@@ -39,9 +39,9 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
     if logger:
         logger.debug(f"Uploading {audio_path} to Gemini")
 
-    uploaded_file = client.files.upload(path=audio_path)
+    uploaded_file = client.files.upload(file=audio_path)
     print(uploaded_file)
-    print(type(uploaded_file))
+   
     print(uploaded_file.state)
     print(type(uploaded_file.state))
     poll_start = time.time()
