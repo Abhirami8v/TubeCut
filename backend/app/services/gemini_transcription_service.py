@@ -8,6 +8,16 @@ from __future__ import annotations
 import json
 import mimetypes
 import time
+import google.genai
+import inspect
+
+print("========== GEMINI DEBUG ==========")
+print("google-genai version:", getattr(google.genai, "__version__", "unknown"))
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+print("upload signature:", inspect.signature(client.files.upload))
+print("==================================")
 from typing import List
 
 from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
@@ -27,7 +37,8 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
     if logger:
         logger.debug(f"Uploading {audio_path} to Gemini")
 
-    uploaded_file = client.files.upload(path=audio_path)
+    #uploaded_file = client.files.upload(path=audio_path)
+    return[]
     print(uploaded_file)
     print(type(uploaded_file))
     print(uploaded_file.state)

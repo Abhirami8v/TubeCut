@@ -58,6 +58,10 @@ CORS_ORIGINS = [
 # ---------------------------------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+print("========== CONFIG ==========")
+print("Gemini Key Loaded:", bool(GEMINI_API_KEY))
+print("Gemini Key Length:", len(GEMINI_API_KEY))
+print("============================")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 YOUTUBE_DATA_API_KEY = os.getenv("YOUTUBE_DATA_API_KEY", "")
 PROXY_URL = os.getenv("PROXY_URL", "")
