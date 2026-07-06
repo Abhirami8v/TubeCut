@@ -45,10 +45,19 @@ def analyze_transcript(transcript: List[dict], target_clip_count: int | None = N
 
 def _analyze_with_gemini(transcript: List[dict], count: int) -> List[CandidateClip]:
     from google import genai
-
+    from google.genai import types
     client = genai.Client(api_key=GEMINI_API_KEY)
 
-    transcript_json = json.dumps(transcript, indent=2)
+    simple_transcript = [
+        {
+            "start": s["start"],
+            "end": s["end"],
+            "text": s["text"],
+        }
+         for s in transcript
+    ]
+
+    transcript_json = json.dumps(simple_transcript, ensure_ascii=False)
 
     prompt = f"""
 You are a world-class short-form video editor identifying viral moments.
@@ -92,14 +101,28 @@ Transcript:
 {transcript_json}
 """
 
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.2,
+    
+        ),
+    )   
 
-    text = response.text.strip()
+    text = (response.text or "").strip()
     text = text.replace("```json", "").replace("```", "").strip()
 
-    result = json.loads(text)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        print("========== RAW GEMINI RESPONSE ==========")
+        print(text)
+        raise
     clips = result.get("clips", [])
-
+    if not isinstance(clips, list):
+        raise ValueError("Gemini returned an invalid clips format.")
     candidates: List[CandidateClip] = []
     for clip in clips:
         candidates.append(
