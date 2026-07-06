@@ -7,7 +7,7 @@ Utility script to download and install key font files required for subtitle burn
 
 from __future__ import annotations
 
-import os
+import platform
 import urllib.request
 from pathlib import Path
 
@@ -31,30 +31,56 @@ FONTS_TO_DOWNLOAD = {
 
 
 def download_and_install_fonts() -> None:
-    # 1. System fonts directory (for ffmpeg/libass on macOS)
-    system_fonts_dir = Path("/Users/manojkc/Library/Fonts")
-    system_fonts_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Downloads fonts needed for:
+      • FFmpeg/libass subtitle rendering
+      • Frontend CSS previews
 
-    # 2. Frontend public assets folder (for browser CSS styling)
+    On macOS:
+        Installs fonts into ~/Library/Fonts
+        Copies fonts into frontend/public/fonts
+
+    On Windows/Linux/Render:
+        Skips system font installation
+        Only downloads to frontend/public/fonts
+    """
+
+    # macOS system fonts
+    if platform.system() == "Darwin":
+        system_fonts_dir = Path.home() / "Library" / "Fonts"
+        system_fonts_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        system_fonts_dir = None
+
+    # Frontend fonts
     backend_dir = Path(__file__).resolve().parents[2]
     frontend_fonts_dir = backend_dir.parent / "frontend" / "public" / "fonts"
     frontend_fonts_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[download_fonts] Target directories:\n  System: {system_fonts_dir}\n  Frontend: {frontend_fonts_dir}")
+    print("[download_fonts] Target directories:")
+    print(f"  System   : {system_fonts_dir}")
+    print(f"  Frontend : {frontend_fonts_dir}")
 
     for filename, url in FONTS_TO_DOWNLOAD.items():
-        system_dest = system_fonts_dir / filename
+
+        # -------------------------------
+        # Install to macOS system fonts
+        # -------------------------------
+        if system_fonts_dir is not None:
+            system_dest = system_fonts_dir / filename
+
+            if not system_dest.exists():
+                print(f"[download_fonts] Downloading {filename} to system fonts...")
+                try:
+                    urllib.request.urlretrieve(url, str(system_dest))
+                except Exception as e:
+                    print(f"[download_fonts] Failed to download {filename} to system fonts: {e}")
+
+        # -------------------------------
+        # Install to frontend assets
+        # -------------------------------
         frontend_dest = frontend_fonts_dir / filename
 
-        # Download to system folder if missing
-        if not system_dest.exists():
-            print(f"[download_fonts] Downloading {filename} to system fonts...")
-            try:
-                urllib.request.urlretrieve(url, str(system_dest))
-            except Exception as e:
-                print(f"[download_fonts] Failed to download {filename} to system fonts: {e}")
-
-        # Download to frontend folder if missing
         if not frontend_dest.exists():
             print(f"[download_fonts] Downloading {filename} to frontend assets...")
             try:
