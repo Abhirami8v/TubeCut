@@ -45,14 +45,6 @@ app.include_router(styles.router)
 app.include_router(library.router)
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
-    try:
-        from app.utils.download_fonts import download_and_install_fonts
-        download_and_install_fonts()
-    except Exception as e:
-        print(f"[main] Failed to run font downloading routine: {e}")
 
 
 @app.get("/")

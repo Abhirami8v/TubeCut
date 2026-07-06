@@ -119,8 +119,16 @@ def _burn_with_image_overlays(
 
     font_path = _resolve_font_path(style.get("font_family", "Arial"), bool(style.get("bold")))
     font_size = max(12, int(style.get("font_size", 34)))
-    font = ImageFont.truetype(str(font_path), font_size)
-    active_font = ImageFont.truetype(str(font_path), round(font_size * 1.16))
+    try:
+        font = ImageFont.truetype(str(font_path), font_size)
+        active_font = ImageFont.truetype(
+            str(font_path),
+            round(font_size * 1.16),
+        )
+    except Exception:
+        print(f"Couldn't load {font_path}, using default font.")
+        font = ImageFont.load_default()
+        active_font = ImageFont.load_default()
     text_color = style.get("text_color", "#FFFFFF")
     highlight_color = style.get("highlight_color", "#FFD400")
     outline_color = style.get("outline_color", "#000000")
@@ -323,6 +331,14 @@ def _wrap_text(draw, text: str, font, max_width: int, stroke_width: int) -> str:
 
 
 def _resolve_font_path(font_family: str, bold: bool) -> Path:
+    project_root = Path(__file__).resolve().parents[3]
+
+    frontend_fonts = (
+        project_root /
+        "frontend" /
+        "public" /
+        "fonts"
+    )
     if os.name == 'nt':
         roots = [
             Path(os.environ.get("SystemRoot", "C:\\Windows")) / "Fonts"
