@@ -8,37 +8,38 @@ from __future__ import annotations
 import json
 import mimetypes
 import time
-import google.genai
-import inspect
-
-print("========== GEMINI DEBUG ==========")
-print("google-genai version:", getattr(google.genai, "__version__", "unknown"))
-
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-print("upload signature:", inspect.signature(client.files.upload))
-print("==================================")
 from typing import List
+
+
 
 from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
 from app.core.logging_utils import JobLogger
 from app.services.transcript_utils import TranscriptSegment, WordTimestamp
-
+print("========== GEMINI FILE LOADED ==========")
+print(__file__)
 
 def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[TranscriptSegment]:
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set.")
 
+    
     from google import genai
+    import inspect
 
+    print("GENAI MODULE:", genai)
+    print("GENAI FILE:", genai.__file__)
+    print("GENAI VERSION:", getattr(genai, "__version__", "NO VERSION"))
+    print("ENTERED transcribe_audio()")
     client = genai.Client(api_key=GEMINI_API_KEY)
+
+    print("UPLOAD SIGNATURE:", inspect.signature(client.files.upload))
+   
     mime_type = mimetypes.guess_type(audio_path)[0] or "audio/wav"
 
     if logger:
         logger.debug(f"Uploading {audio_path} to Gemini")
 
-    #uploaded_file = client.files.upload(path=audio_path)
-    return[]
+    uploaded_file = client.files.upload(path=audio_path)
     print(uploaded_file)
     print(type(uploaded_file))
     print(uploaded_file.state)
