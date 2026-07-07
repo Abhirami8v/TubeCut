@@ -45,6 +45,17 @@ app.include_router(styles.router)
 app.include_router(library.router)
 
 
+@app.on_event("startup")
+def on_startup():
+    """Create all database tables on every boot.
+
+    Render uses an ephemeral filesystem — the SQLite file is wiped on
+    every deploy/restart, so we must recreate it each time.
+    """
+    init_db()
+    print("[startup] Database tables created/verified.")
+
+
 
 
 @app.get("/")
