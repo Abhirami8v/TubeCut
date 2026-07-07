@@ -29,7 +29,7 @@ async function request(path, options = {}) {
     } catch {
       // response wasn't JSON; fall back to statusText
     }
-    throw new Error(detail || `Request failed: ${res.status}`)
+    throw new Error(`${res.status}: ${detail || 'Request failed'}`)
   }
 
   if (res.status === 204) return null

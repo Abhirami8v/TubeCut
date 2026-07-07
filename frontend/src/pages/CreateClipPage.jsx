@@ -15,7 +15,15 @@ export default function CreateClipPage() {
   const [autoReframe, setAutoReframe] = useState(true)
   const navigate = useNavigate()
 
-  const { job, error: pollError } = useJobPolling(jobId)
+  const { job, error: pollError, notFound } = useJobPolling(jobId)
+
+  // If the backend lost the job (e.g. Render restart wiped SQLite),
+  // auto-clear the stale jobId so the user sees the input form again.
+  useEffect(() => {
+    if (notFound) {
+      setJobId(null)
+    }
+  }, [notFound])
 
   useEffect(() => {
     if (jobId) {
