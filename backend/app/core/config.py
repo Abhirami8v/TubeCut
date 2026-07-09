@@ -42,7 +42,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BACKEND_DIR / 'tubecut.db'
 # Server / CORS
 # ---------------------------------------------------------------------------
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://tubecut.onrender.com")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://tubecut.onrender.com","https://tubecut-production.up.railway.app")
 
 CORS_ORIGINS = [
     origin.strip()
