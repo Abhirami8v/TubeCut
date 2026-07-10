@@ -277,5 +277,10 @@ def _render_stationary_vertical(video_path: str, output_path: Path) -> str:
         "+faststart",
         str(output_path),
     ]
-    subprocess.run(command, check=True, capture_output=True)
-    return str(output_path)
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print("STDOUT:\n", e.stdout)
+        print("STDERR:\n", e.stderr)
+        raise
+ 
