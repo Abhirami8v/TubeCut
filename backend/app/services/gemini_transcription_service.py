@@ -108,6 +108,35 @@ Return ONLY valid JSON, no markdown, in this exact shape:
 
     transcript.sort(key=lambda s: s["start"])
 
+    # Check if the timestamps are valid
+    has_valid_timestamps = False
+    if transcript:
+        last_end = transcript[-1]["end"]
+        # Valid if last segment end is substantial and starts are not all identical to 0
+        if last_end > 2.0 and any(s["start"] != 0.0 for s in transcript):
+            has_valid_timestamps = True
+
+    if not has_valid_timestamps and transcript:
+        from app.services import video_service
+        try:
+            # Probe wav audio duration
+            duration = video_service.probe_duration(audio_path)
+        except Exception:
+            duration = len(transcript) * 10.0
+
+        duration = duration or (len(transcript) * 10.0)
+        step = duration / len(transcript)
+
+        for i, seg in enumerate(transcript):
+            start = i * step
+            end = (i + 1) * step
+            seg["start"] = round(start, 2)
+            seg["end"] = round(end, 2)
+            seg["words"] = _synthesize_word_timestamps(seg["text"], start, end)
+
+        if logger:
+            logger.info(f"Gemini returned invalid timestamps; linearly distributed segments over {duration:.1f}s")
+
     if logger:
         total_words = sum(len(s["words"]) for s in transcript)
         logger.info(f"Gemini transcription: {len(transcript)} segments, {total_words} words")

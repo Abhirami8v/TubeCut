@@ -156,10 +156,7 @@ def _fallback_segmentation(transcript: List[dict], count: int) -> List[Candidate
 
     total_duration = transcript[-1]["end"]
     
-    # Target 25-45 second clips depending on the duration
-    target_duration = total_duration / max(count, 1)
-    target_duration = min(45.0, max(25.0, target_duration))
-
+    import random
     candidates: List[CandidateClip] = []
     segment_duration = total_duration / max(count, 1)
 
@@ -170,7 +167,14 @@ def _fallback_segmentation(transcript: List[dict], count: int) -> List[Candidate
         start_seg = min(transcript, key=lambda s: abs(s["start"] - ideal_start))
         start_time = start_seg["start"]
 
-        # Target end time
+        # Target end time: random engaging duration between 25.0 and 55.0 seconds
+        min_dur = min(25.0, total_duration)
+        max_dur = min(55.0, total_duration)
+        if min_dur >= max_dur:
+            target_duration = total_duration
+        else:
+            target_duration = random.uniform(min_dur, max_dur)
+
         ideal_end = start_time + target_duration
         end_seg = min(transcript, key=lambda s: abs(s["end"] - ideal_end))
         end_time = end_seg["end"]
