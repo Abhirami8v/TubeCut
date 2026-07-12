@@ -112,7 +112,12 @@ Transcript:
     )   
 
     text = (response.text or "").strip()
-    text = text.replace("```json", "").replace("```", "").strip()
+    
+    # Robust JSON extraction: locate the JSON object bounding braces
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace != -1:
+        text = text[first_brace:last_brace + 1]
 
     try:
         result = json.loads(text)
@@ -143,44 +148,52 @@ Transcript:
 
 def _fallback_segmentation(transcript: List[dict], count: int) -> List[CandidateClip]:
     """
-    Deterministic fallback: walk the transcript and greedily build clips
-    out of consecutive segments until they reach a reasonable target
-    duration, splitting on the largest available silence gaps.
+    Deterministic fallback: build exactly `count` clips of engaging
+    short-form length (25-45 seconds) spaced evenly across the video.
     """
     if not transcript:
         return []
 
     total_duration = transcript[-1]["end"]
-    target_duration = min(MAX_CLIP_SECONDS, max(MIN_CLIP_SECONDS, total_duration / max(count, 1)))
+    
+    # Target 25-45 second clips depending on the duration
+    target_duration = total_duration / max(count, 1)
+    target_duration = min(45.0, max(25.0, target_duration))
 
     candidates: List[CandidateClip] = []
-    current_start = transcript[0]["start"]
-    current_text_segments: List[str] = []
-    chunk_start_idx = 0
+    segment_duration = total_duration / max(count, 1)
 
-    for i, segment in enumerate(transcript):
-        current_text_segments.append(segment["text"])
-        elapsed = segment["end"] - current_start
+    for idx in range(count):
+        ideal_start = idx * segment_duration
+        
+        # Find closest start segment
+        start_seg = min(transcript, key=lambda s: abs(s["start"] - ideal_start))
+        start_time = start_seg["start"]
 
-        is_last = i == len(transcript) - 1
-        if elapsed >= target_duration or is_last:
-            end_time = segment["end"]
-            candidates.append(
-                {
-                    "start_time": round(current_start, 2),
-                    "end_time": round(end_time, 2),
-                    "confidence_score": 60.0,
-                    "reason": "Auto-segmented (fallback) based on transcript pacing.",
-                    "title": " ".join(current_text_segments)[:48].strip() or "Untitled Clip",
-                }
-            )
+        # Target end time
+        ideal_end = start_time + target_duration
+        end_seg = min(transcript, key=lambda s: abs(s["end"] - ideal_end))
+        end_time = end_seg["end"]
 
-            if len(candidates) >= count:
-                break
+        if end_time <= start_time:
+            end_time = start_time + target_duration
 
-            if i + 1 < len(transcript):
-                current_start = transcript[i + 1]["start"]
-            current_text_segments = []
-            chunk_start_idx = i + 1
+        # Accumulate text for clip title
+        text_pieces = []
+        for s in transcript:
+            if start_time <= s["start"] <= end_time:
+                text_pieces.append(s["text"])
 
-    return candidates[:count]
+        title = " ".join(text_pieces)[:40].strip() or f"Highlight Moment {idx + 1}"
+
+        candidates.append(
+            {
+                "start_time": round(start_time, 2),
+                "end_time": round(end_time, 2),
+                "confidence_score": 60.0,
+                "reason": f"Auto-segmented fallback moment from part {idx + 1} of the video.",
+                "title": title,
+            }
+        )
+
+    return candidates

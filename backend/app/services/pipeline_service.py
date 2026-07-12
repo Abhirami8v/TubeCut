@@ -271,7 +271,7 @@ def _render_single_clip(db: Session, job: Job, clip: Clip, auto_reframe: bool) -
     block_dicts = None
     if clip.applied_style and clip.caption_blocks:
         style_dict = clip.applied_style.to_dict()
-        block_dicts = [b.to_dict() for b in clip.caption_blocks]
+        block_dicts = [b.to_dict() for b in sorted(clip.caption_blocks, key=lambda b: b.order_index)]
 
     final_path = clip_service.render_captioned_only(
         uncaptioned_path=uncaptioned_path,
