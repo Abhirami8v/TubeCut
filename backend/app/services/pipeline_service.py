@@ -249,27 +249,39 @@ def _render_single_clip(db: Session, job: Job, clip: Clip, auto_reframe: bool) -
 
     logger = JobLogger(job.id)
 
+    # Step 1: Render uncaptioned clip
+    uncaptioned_path = clip_service.render_uncaptioned_clip(
+        source_video_path=job.source_video_path,
+        trim_start_time=clip.trim_start_time,
+        trim_end_time=clip.trim_end_time,
+        clip_id=clip.id,
+        auto_reframe=auto_reframe,
+        logger=logger,
+    )
+
+    if auto_reframe:
+        clip.reframed_clip_path = uncaptioned_path
+        clip.is_vertical = True
+    else:
+        clip.raw_clip_path = uncaptioned_path
+    db.commit()
+
+    # Step 2: Burn captions on top of the uncaptioned clip
     style_dict = None
     block_dicts = None
     if clip.applied_style and clip.caption_blocks:
         style_dict = clip.applied_style.to_dict()
         block_dicts = [b.to_dict() for b in clip.caption_blocks]
 
-    final_path = clip_service.render_clip_final(
-        source_video_path=job.source_video_path,
-        trim_start_time=clip.trim_start_time,
-        trim_end_time=clip.trim_end_time,
+    final_path = clip_service.render_captioned_only(
+        uncaptioned_path=uncaptioned_path,
         clip_id=clip.id,
-        auto_reframe=auto_reframe,
         applied_style=style_dict,
         caption_blocks=block_dicts,
         logger=logger,
     )
 
     clip.final_clip_path = final_path
-    if auto_reframe:
-        clip.is_vertical = True
-
     clip.thumbnail_path = clip_service.generate_thumbnail(final_path, clip.id)
     clip.render_status = "ready"
     db.commit()

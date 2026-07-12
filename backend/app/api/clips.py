@@ -64,9 +64,43 @@ def _rebuild_caption_indices(clip: Clip, db: Session) -> None:
 
 def _reburn_clip(db: Session, clip: Clip) -> None:
     """Re-generate the .ass file from current blocks/style and re-render the final mp4."""
+    import os
+    from app.core.logging_utils import JobLogger
+
+    # Identify or regenerate the uncaptioned video path
+    uncaptioned_path = clip.reframed_clip_path or clip.raw_clip_path
     job = clip.job
-    if not job or not job.source_video_path:
-        return
+
+    if not uncaptioned_path or not os.path.exists(uncaptioned_path):
+        if job and job.source_video_path and os.path.exists(job.source_video_path):
+            # Regenerate the uncaptioned clip from the original source video
+            logger = JobLogger(job.id)
+            try:
+                uncaptioned_path = clip_service.render_uncaptioned_clip(
+                    source_video_path=job.source_video_path,
+                    trim_start_time=clip.trim_start_time,
+                    trim_end_time=clip.trim_end_time,
+                    clip_id=clip.id,
+                    auto_reframe=clip.is_vertical,
+                    logger=logger,
+                )
+                if clip.is_vertical:
+                    clip.reframed_clip_path = uncaptioned_path
+                else:
+                    clip.raw_clip_path = uncaptioned_path
+                db.commit()
+            except Exception as e:
+                clip.render_status = "failed"
+                db.commit()
+                raise e
+        else:
+            # Source video was deleted and uncaptioned clip is missing!
+            clip.render_status = "failed"
+            db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail="Original source video is no longer available on the server to re-render this clip."
+            )
 
     clip.render_status = "rendering"
     db.commit()
@@ -81,15 +115,11 @@ def _reburn_clip(db: Session, clip: Clip) -> None:
         style_dict = style.to_dict()
         block_dicts = [b.to_dict() for b in sorted(clip.caption_blocks, key=lambda b: b.order_index)]
 
-        from app.core.logging_utils import JobLogger
-        logger = JobLogger(job.id)
+        logger = JobLogger(job.id if job else clip.job_id)
 
-        final_path = clip_service.render_clip_final(
-            source_video_path=job.source_video_path,
-            trim_start_time=clip.trim_start_time,
-            trim_end_time=clip.trim_end_time,
+        final_path = clip_service.render_captioned_only(
+            uncaptioned_path=uncaptioned_path,
             clip_id=clip.id,
-            auto_reframe=clip.is_vertical,
             applied_style=style_dict,
             caption_blocks=block_dicts,
             logger=logger,
@@ -198,6 +228,17 @@ def trim_clip(clip_id: str, payload: TrimClipRequest, db: Session = Depends(get_
                 os.remove(cache_path)
             except OSError:
                 pass
+
+        # Delete the old uncaptioned clip file since the trim window changed
+        old_uncaptioned = clip.reframed_clip_path or clip.raw_clip_path
+        if old_uncaptioned and os.path.exists(old_uncaptioned):
+            try:
+                os.remove(old_uncaptioned)
+            except OSError:
+                pass
+        clip.reframed_clip_path = None
+        clip.raw_clip_path = None
+        db.commit()
 
         _reburn_clip(db, clip)
     except Exception as exc:  # noqa: BLE001
