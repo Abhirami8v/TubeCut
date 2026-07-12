@@ -130,9 +130,9 @@ MAX_CLIP_SECONDS = 90
 TARGET_CLIP_COUNT = 3
 
 # Auto vertical reframe
-REFRAME_TARGET_WIDTH = 1080
+REFRAME_TARGET_WIDTH = int(os.getenv("REFRAME_TARGET_WIDTH", "720"))
 MAX_REFRAME_KEYFRAMES = 10
-REFRAME_TARGET_HEIGHT = 1920
+REFRAME_TARGET_HEIGHT = int(os.getenv("REFRAME_TARGET_HEIGHT", "1280"))
 REFRAME_DETECT_EVERY_N_FRAMES = 20
 REFRAME_SMOOTHING_ALPHA = 0.15
 YOLO_WEIGHTS_PATH = os.getenv("YOLO_WEIGHTS_PATH", str(BACKEND_DIR / "yolov8n.pt"))
@@ -182,7 +182,7 @@ FALLBACK_FONT_PATH = os.getenv(
 # Performance / concurrency
 # ---------------------------------------------------------------------------
 
-MAX_PARALLEL_CLIP_RENDERS = int(os.getenv("MAX_PARALLEL_CLIP_RENDERS", "2"))
+MAX_PARALLEL_CLIP_RENDERS = int(os.getenv("MAX_PARALLEL_CLIP_RENDERS", "1"))
 
 FAST_ENCODE_PRESET = os.getenv("FAST_ENCODE_PRESET", "ultrafast")
 FINAL_ENCODE_PRESET = os.getenv("FINAL_ENCODE_PRESET", "veryfast")
