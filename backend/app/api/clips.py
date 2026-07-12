@@ -64,49 +64,45 @@ def _rebuild_caption_indices(clip: Clip, db: Session) -> None:
 
 def _reburn_clip(db: Session, clip: Clip) -> None:
     """Re-generate the .ass file from current blocks/style and re-render the final mp4."""
-    render_source = clip.reframed_clip_path or clip.raw_clip_path
-    if not render_source:
+    job = clip.job
+    if not job or not job.source_video_path:
         return
 
-    block_dicts = [b.to_dict() for b in sorted(clip.caption_blocks, key=lambda b: b.order_index)]
-    if not block_dicts:
-        # No caption blocks at all -- nothing to burn, just point at the unstyled render.
-        clip.final_clip_path = render_source
-        db.commit()
-        return
-
-    style = clip.applied_style
-    if style is None:
-        # A clip with caption blocks should always have a style; if it
-        # doesn't (e.g. legacy data), fall back to the default rather
-        # than silently rendering no captions.
-        style = style_service.get_default_style(db)
-        clip.applied_style_id = style.id
-        db.commit()
-
-    from app.services.video_service import probe_dimensions
-
-    width, height = probe_dimensions(render_source)
-    width = width or (1080 if clip.is_vertical else 1920)
-    height = height or (1920 if clip.is_vertical else 1080)
-
-    style_dict = style.to_dict()
-
-    ass_content = caption_service.generate_ass_file(block_dicts, style_dict, width, height)
-    ass_path = caption_burn_service.write_ass_file(ass_content, clip.id)
-    final_path = caption_burn_service.burn_captions(
-        render_source,
-        ass_path,
-        clip_id=clip.id,
-        blocks=block_dicts,
-        style=style_dict,
-        video_width=width,
-        video_height=height,
-    )
-
-    clip.final_clip_path = final_path
-    clip.thumbnail_path = clip_service.generate_thumbnail(final_path, clip.id)
+    clip.render_status = "rendering"
     db.commit()
+
+    try:
+        style = clip.applied_style
+        if style is None:
+            style = style_service.get_default_style(db)
+            clip.applied_style_id = style.id
+            db.commit()
+
+        style_dict = style.to_dict()
+        block_dicts = [b.to_dict() for b in sorted(clip.caption_blocks, key=lambda b: b.order_index)]
+
+        from app.core.logging_utils import JobLogger
+        logger = JobLogger(job.id)
+
+        final_path = clip_service.render_clip_final(
+            source_video_path=job.source_video_path,
+            trim_start_time=clip.trim_start_time,
+            trim_end_time=clip.trim_end_time,
+            clip_id=clip.id,
+            auto_reframe=clip.is_vertical,
+            applied_style=style_dict,
+            caption_blocks=block_dicts,
+            logger=logger,
+        )
+
+        clip.final_clip_path = final_path
+        clip.thumbnail_path = clip_service.generate_thumbnail(final_path, clip.id)
+        clip.render_status = "ready"
+        db.commit()
+    except Exception as e:
+        clip.render_status = "failed"
+        db.commit()
+        raise e
 
 
 def _rebuild_word_accurate_captions(db: Session, clip: Clip) -> None:
@@ -189,23 +185,21 @@ def trim_clip(clip_id: str, payload: TrimClipRequest, db: Session = Depends(get_
     db.commit()
 
     try:
-        raw_path = clip_service.retrim_clip(job.source_video_path, absolute_start, absolute_end, clip.id)
-        clip.raw_clip_path = raw_path
         clip.trim_start_time = absolute_start
         clip.trim_end_time = absolute_end
-
-        if clip.is_vertical:
-            from app.services import reframe_service
-
-            reframed_path = reframe_service.render_vertical_reframe(
-                raw_path, absolute_end - absolute_start, clip_id=clip.id
-            )
-            clip.reframed_clip_path = reframed_path
-
         db.commit()
+
+        # Clear cached crop json because the trim window has changed!
+        from app.core.config import CLIPS_DIR
+        import os
+        cache_path = CLIPS_DIR / f"crop_{clip.id}.json"
+        if cache_path.exists():
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
+
         _reburn_clip(db, clip)
-        clip.render_status = "ready"
-        db.commit()
     except Exception as exc:  # noqa: BLE001
         clip.render_status = "failed"
         db.commit()
@@ -216,7 +210,7 @@ def trim_clip(clip_id: str, payload: TrimClipRequest, db: Session = Depends(get_
         trim_start_time=payload.trim_start_time,
         trim_end_time=payload.trim_end_time,
         render_status=clip.render_status,
-        preview_url=to_media_url(clip.final_clip_path or clip.raw_clip_path),
+        preview_url=to_media_url(clip.final_clip_path),
     )
 
 

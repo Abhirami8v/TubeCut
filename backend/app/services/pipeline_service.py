@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import traceback
+from threading import Semaphore
 
 from sqlalchemy.orm import Session
 
@@ -35,6 +36,9 @@ from app.services import (
     video_service,
 )
 
+# Global semaphore to limit active jobs running concurrently
+_job_semaphore = Semaphore(1)
+
 
 def _update_job(db: Session, job: Job, *, status: JobStatus, progress: float, label: str) -> None:
     job.status = status
@@ -51,27 +55,32 @@ def run_pipeline(
     auto_caption_style_id: str | None,
 ) -> None:
     """
-    Entry point invoked as a FastAPI BackgroundTask. Owns its own DB
-    session since it runs outside the request/response cycle.
+    Entry point invoked as a FastAPI BackgroundTask.
+    Serially runs jobs using a global Semaphore to avoid CPU/RAM OOM.
     """
-    db = SessionLocal()
-    try:
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if job is None:
-            return
+    with _job_semaphore:
+        db = SessionLocal()
+        try:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job is None:
+                return
 
-        _run_pipeline_inner(db, job, url, target_clip_count, auto_reframe, auto_caption_style_id)
+            _run_pipeline_inner(db, job, url, target_clip_count, auto_reframe, auto_caption_style_id)
 
-    except Exception as exc:  # noqa: BLE001
-        traceback.print_exc()
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if job is not None:
-            job.status = JobStatus.FAILED
-            job.error_message = str(exc)
-            job.current_step_label = "Failed"
-            db.commit()
-    finally:
-        db.close()
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            try:
+                db.rollback()
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job is not None:
+                    job.status = JobStatus.FAILED
+                    job.error_message = str(exc)
+                    job.current_step_label = "Failed"
+                    db.commit()
+            except Exception:
+                pass
+        finally:
+            db.close()
 
 
 def _run_pipeline_inner(
@@ -164,23 +173,48 @@ def _run_pipeline_inner(
     # --- Step 6: render each clip (trim -> [reframe] -> burn captions) ----
     _update_job(db, job, status=JobStatus.RENDERING_CLIPS, progress=70, label="Rendering clips")
 
-    total = max(len(clip_rows), 1)
-    for i, clip in enumerate(clip_rows):
-        try:
-            _render_single_clip(db, job, clip, auto_reframe)
-        except Exception as exc:  # noqa: BLE001
-            traceback.print_exc()
-            clip.render_status = "failed"
-            db.commit()
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.core.config import MAX_PARALLEL_CLIP_RENDERS
 
-        progress = 70 + int(28 * ((i + 1) / total))
-        _update_job(
-            db,
-            job,
-            status=JobStatus.RENDERING_CLIPS,
-            progress=min(98, progress),
-            label=f"Rendering clip {i + 1} of {total}",
-        )
+    total = max(len(clip_rows), 1)
+
+    def render_task(clip_id):
+        # SQLAlchemy sessions are not thread-safe, so each thread needs its own session
+        thread_db = SessionLocal()
+        try:
+            clip = thread_db.query(Clip).filter(Clip.id == clip_id).first()
+            job_thread = thread_db.query(Job).filter(Job.id == job.id).first()
+            if clip and job_thread:
+                _render_single_clip(thread_db, job_thread, clip, auto_reframe)
+                return clip_id, True, None
+            return clip_id, False, "Clip or Job not found"
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                clip = thread_db.query(Clip).filter(Clip.id == clip_id).first()
+                if clip:
+                    clip.render_status = "failed"
+                    thread_db.commit()
+            except Exception:
+                pass
+            return clip_id, False, str(e)
+        finally:
+            thread_db.close()
+
+    completed_count = 0
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_CLIP_RENDERS) as executor:
+        futures = {executor.submit(render_task, clip.id): clip.id for clip in clip_rows}
+        for future in as_completed(futures):
+            clip_id, success, error_msg = future.result()
+            completed_count += 1
+            progress = 70 + int(28 * (completed_count / total))
+            _update_job(
+                db,
+                job,
+                status=JobStatus.RENDERING_CLIPS,
+                progress=min(98, progress),
+                label=f"Rendering clip {completed_count} of {total}",
+            )
 
     _update_job(db, job, status=JobStatus.COMPLETED, progress=100, label="Done")
 
@@ -189,51 +223,29 @@ def _render_single_clip(db: Session, job: Job, clip: Clip, auto_reframe: bool) -
     clip.render_status = "rendering"
     db.commit()
 
-    raw_path = clip_service.render_raw_clip(
-        job.source_video_path, clip.trim_start_time, clip.trim_end_time, clip_id=clip.id
-    )
-    clip.raw_clip_path = raw_path
-    db.commit()
+    logger = JobLogger(job.id)
 
-    render_source = raw_path
-    if auto_reframe:
-        duration = clip.trim_end_time - clip.trim_start_time
-        reframed_path = reframe_service.render_vertical_reframe(raw_path, duration, clip_id=clip.id)
-        clip.reframed_clip_path = reframed_path
-        clip.is_vertical = True
-        render_source = reframed_path
-        video_width, video_height = REFRAME_TARGET_WIDTH, REFRAME_TARGET_HEIGHT
-    else:
-        video_width, video_height = video_service.probe_dimensions(raw_path)
-        video_width = video_width or 1920
-        video_height = video_height or 1080
-
-    db.commit()
-
+    style_dict = None
+    block_dicts = None
     if clip.applied_style and clip.caption_blocks:
         style_dict = clip.applied_style.to_dict()
         block_dicts = [b.to_dict() for b in clip.caption_blocks]
-        ass_content = caption_service.generate_ass_file(block_dicts, style_dict, video_width, video_height)
-        ass_path = caption_burn_service.write_ass_file(ass_content, clip.id)
-        final_path = caption_burn_service.burn_captions(
-            render_source,
-            ass_path,
-            clip_id=clip.id,
-            blocks=block_dicts,
-            style=style_dict,
-            video_width=video_width,
-            video_height=video_height,
-        )
-        clip.final_clip_path = final_path
-    else:
-        if not clip.caption_blocks:
-            print(
-                f"[pipeline_service] Clip {clip.id} has no caption blocks (Whisper produced no words "
-                "for this time range) -- rendering without captions. Add captions manually from the "
-                "clip editor's Captions tab."
-            )
-        clip.final_clip_path = render_source
 
-    clip.thumbnail_path = clip_service.generate_thumbnail(clip.final_clip_path, clip.id)
+    final_path = clip_service.render_clip_final(
+        source_video_path=job.source_video_path,
+        trim_start_time=clip.trim_start_time,
+        trim_end_time=clip.trim_end_time,
+        clip_id=clip.id,
+        auto_reframe=auto_reframe,
+        applied_style=style_dict,
+        caption_blocks=block_dicts,
+        logger=logger,
+    )
+
+    clip.final_clip_path = final_path
+    if auto_reframe:
+        clip.is_vertical = True
+
+    clip.thumbnail_path = clip_service.generate_thumbnail(final_path, clip.id)
     clip.render_status = "ready"
     db.commit()

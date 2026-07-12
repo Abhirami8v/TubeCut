@@ -1,25 +1,18 @@
 """
 reframe_service.py
 
-Memory-efficient vertical reframe pipeline designed for 512MB RAM limit.
-
-Pipeline:
-  Python → YOLO (sample frames) → 10 crop positions → 10 tiny ffmpeg jobs → concat → finished
-
-Key optimizations for 512MB:
-- YOLO runs on heavily downscaled frames (320px wide)
-- Only 10 sample points across the whole clip
-- Each ffmpeg segment is tiny (processes only its own chunk)
-- No frames loaded into memory simultaneously
-- Concat is a simple ffmpeg demuxer (no re-encode)
+Highly optimized, memory-efficient vertical reframe pipeline.
+Bypasses intermediate file writes and multiple FFmpeg subprocesses.
+Uses OpenCV for in-memory frame extraction and batch YOLOv8 prediction.
 """
 
 from __future__ import annotations
 
-import os
+import json
 import uuid
 from pathlib import Path
-from typing import List, TypedDict
+import cv2
+import numpy as np
 
 from app.core.config import (
     CLIPS_DIR,
@@ -32,21 +25,11 @@ from app.core.config import (
 )
 from app.core.logging_utils import JobLogger
 from app.services.ffmpeg_utils import FFmpegError, run_ffmpeg
-from app.services.video_service import probe_dimensions
 
 _yolo_model = None
 
-NUM_SAMPLE_POINTS = 10  # exactly 10 crop positions across the clip
-YOLO_SAMPLE_WIDTH = 320  # tiny frames for YOLO — saves RAM dramatically
-
-
-class CropKeyframe(TypedDict):
-    time: float
-    crop_x: int
-
-
-class ReframeError(RuntimeError):
-    pass
+NUM_SAMPLE_POINTS = 10      # sample points across the clip
+YOLO_SAMPLE_WIDTH = 320     # small resolution for YOLO to minimize memory usage
 
 
 def _get_yolo_model(logger: JobLogger | None = None):
@@ -60,215 +43,147 @@ def _get_yolo_model(logger: JobLogger | None = None):
     return _yolo_model
 
 
-def _sample_frames_with_ffmpeg(
+def get_crop_expr_for_clip(
+    clip_id: str,
     video_path: str,
-    num_samples: int,
+    start_time: float,
     duration: float,
-    out_dir: Path,
     logger: JobLogger | None = None,
-) -> List[Path]:
+) -> tuple[str, int]:
     """
-    Extract exactly num_samples frames evenly spaced across the clip
-    using ffmpeg. Frames are saved at YOLO_SAMPLE_WIDTH px wide to
-    minimize memory usage. Returns list of frame paths.
+    Get the compiled FFmpeg crop expression for a clip.
+    If cached on disk, loads it from the cache file.
+    Otherwise, extracts frames using OpenCV, runs batch YOLO,
+    computes smoothed crop coordinates, compiles it, caches it, and returns it.
+    Returns (crop_expr_str, crop_width).
     """
-    frame_paths = []
-
-    for i in range(num_samples):
-        # Evenly space sample points across the clip
-        t = (i / max(num_samples - 1, 1)) * duration
-        t = min(t, duration - 0.1)
-
-        frame_path = out_dir / f"frame_{i:03d}.jpg"
-
-        command = [
-            "ffmpeg", "-y",
-            "-ss", f"{t:.3f}",
-            "-i", video_path,
-            "-frames:v", "1",
-            "-vf", f"scale={YOLO_SAMPLE_WIDTH}:-1",
-            "-q:v", "5",
-            str(frame_path),
-        ]
-
+    cache_path = CLIPS_DIR / f"crop_{clip_id}.json"
+    if cache_path.exists():
         try:
-            run_ffmpeg(command, logger=logger, label=f"sample_frame_{i}")
-            if frame_path.exists():
-                frame_paths.append(frame_path)
-        except FFmpegError:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            return data["crop_expr"], data["crop_width"]
+        except Exception:
+            pass
+
+    # Determine video dimensions
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        if logger:
+            logger.error(f"OpenCV could not open video for reframing: {video_path}")
+        return "0", REFRAME_TARGET_WIDTH
+    
+    src_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    src_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    if src_width == 0 or src_height == 0:
+        return "0", REFRAME_TARGET_WIDTH
+
+    crop_width = int(src_height * (REFRAME_TARGET_WIDTH / REFRAME_TARGET_HEIGHT))
+    crop_width = min(crop_width, src_width)
+
+    # 1. Sample times across the clip duration
+    times = []
+    for i in range(NUM_SAMPLE_POINTS):
+        t = start_time + (i / max(NUM_SAMPLE_POINTS - 1, 1)) * duration
+        t = min(t, start_time + duration - 0.05)
+        times.append(t)
+
+    # 2. Extract frames using OpenCV in-memory
+    frames = []
+    cap = cv2.VideoCapture(video_path)
+    for t in times:
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            # Fallback seek to frame index
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
+            ret, frame = cap.read()
+            
+        if ret and frame is not None:
+            # Downscale for memory efficiency and speed
+            h, w = frame.shape[:2]
+            new_w = YOLO_SAMPLE_WIDTH
+            new_h = int(h * (new_w / w))
+            resized = cv2.resize(frame, (new_w, new_h))
+            frames.append(resized)
+        else:
             if logger:
-                logger.warn(f"Could not extract frame at t={t:.2f}s")
+                logger.warn(f"Frame extraction failed at {t:.2f}s")
+    cap.release()
 
-    if logger:
-        logger.info(f"Extracted {len(frame_paths)}/{num_samples} sample frames")
+    if not frames:
+        # Fallback: static center crop
+        center_x = (src_width - crop_width) // 2
+        return str(center_x), crop_width
 
-    return frame_paths
-
-
-def _detect_crop_positions(
-    frame_paths: List[Path],
-    src_width: int,
-    src_height: int,
-    crop_width: int,
-    duration: float,
-    logger: JobLogger | None = None,
-) -> List[CropKeyframe]:
-    """
-    Run YOLO on each sampled frame to find person position.
-    Returns 10 crop keyframes with smoothed x positions.
-    """
-    from PIL import Image
-
+    # 3. Batch predict YOLO
     model = _get_yolo_model(logger)
-    num_samples = len(frame_paths)
+    # ultralytics accept list of numpy BGR frames directly
+    results = model.predict(
+        frames,
+        classes=[0],  # person only
+        verbose=False,
+        conf=YOLO_CONFIDENCE_THRESHOLD,
+    )
 
-    raw_centers: List[float] = []
+    # 4. Extract centers
+    raw_centers = []
+    for idx, result in enumerate(results):
+        frame_w = frames[idx].shape[1]
+        best_box = None
+        best_area = 0.0
 
-    for i, frame_path in enumerate(frame_paths):
-        try:
-            # Load tiny frame - minimal RAM usage
-            img = Image.open(frame_path)
-            frame_w, frame_h = img.size
+        for box in result.boxes:
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            area = (x2 - x1) * (y2 - y1)
+            if area > best_area:
+                best_area = area
+                best_box = (x1, x2)
 
-            results = model.predict(
-                str(frame_path),
-                classes=[0],  # person only
-                verbose=False,
-                conf=YOLO_CONFIDENCE_THRESHOLD,
-            )
-
-            best_box = None
-            best_area = 0.0
-
-            for result in results:
-                for box in result.boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    area = (x2 - x1) * (y2 - y1)
-                    if area > best_area:
-                        best_area = area
-                        best_box = (x1, x2)
-
-            if best_box is not None:
-                x1, x2 = best_box
-                # Normalize to 0-1 range based on sample frame width
-                center_norm = ((x1 + x2) / 2.0) / frame_w
-                raw_centers.append(center_norm)
-            else:
-                # No person found — use center
-                raw_centers.append(0.5)
-
-            # Delete frame immediately after use to free RAM
-            img.close()
-            try:
-                os.remove(frame_path)
-            except OSError:
-                pass
-
-        except Exception as e:
-            if logger:
-                logger.warn(f"YOLO detection failed on frame {i}: {e}")
+        if best_box is not None:
+            x1, x2 = best_box
+            center_norm = ((x1 + x2) / 2.0) / frame_w
+            raw_centers.append(center_norm)
+        else:
             raw_centers.append(0.5)
 
-    if logger:
-        detected = sum(1 for c in raw_centers if c != 0.5)
-        logger.info(f"YOLO: detected person in {detected}/{num_samples} frames")
-
-    # Exponential smoothing to remove jitter
+    # 5. Smooth crop positions to prevent jitter
     smoothed = []
     current = raw_centers[0] if raw_centers else 0.5
     for center in raw_centers:
         current = REFRAME_SMOOTHING_ALPHA * center + (1 - REFRAME_SMOOTHING_ALPHA) * current
         smoothed.append(current)
 
-    # Convert to pixel crop positions
-    keyframes: List[CropKeyframe] = []
+    # 6. Build nested crop expression relative to clip start (t=0)
+    sorted_kfs = []
     for i, center_norm in enumerate(smoothed):
-        t = (i / max(num_samples - 1, 1)) * duration
-        t = min(t, duration - 0.1)
+        t_rel = (i / max(NUM_SAMPLE_POINTS - 1, 1)) * duration
+        t_rel = min(t_rel, duration - 0.05)
 
         center_px = center_norm * src_width
         crop_x = int(center_px - crop_width / 2)
         crop_x = max(0, min(src_width - crop_width, crop_x))
+        sorted_kfs.append({"time": round(t_rel, 3), "crop_x": crop_x})
 
-        keyframes.append({"time": round(t, 3), "crop_x": crop_x})
+    if len(sorted_kfs) == 1:
+        expr = str(sorted_kfs[0]["crop_x"])
+    else:
+        expr = str(sorted_kfs[-1]["crop_x"])
+        for i in range(len(sorted_kfs) - 2, -1, -1):
+            kf = sorted_kfs[i]
+            next_kf = sorted_kfs[i + 1]
+            expr = f"if(lt(t,{next_kf['time']:.3f}),{kf['crop_x']},{expr})"
 
-    return keyframes
-
-
-def _render_segment(
-    video_path: str,
-    seg_start: float,
-    seg_end: float,
-    crop_x: int,
-    crop_width: int,
-    src_height: int,
-    output_path: Path,
-    logger: JobLogger | None = None,
-) -> bool:
-    """
-    Render one tiny segment with a fixed crop position.
-    Each segment is only 1/10th of the clip — tiny RAM footprint.
-    """
-    duration = seg_end - seg_start
-    if duration <= 0:
-        return False
-
-    filter_str = (
-        f"crop={crop_width}:{src_height}:{crop_x}:0,"
-        f"scale={REFRAME_TARGET_WIDTH}:{REFRAME_TARGET_HEIGHT}"
-    )
-
-    command = [
-        "ffmpeg", "-y",
-        "-ss", f"{seg_start:.3f}",
-        "-i", video_path,
-        "-t", f"{duration:.3f}",
-        "-vf", filter_str,
-        "-c:v", "libx264",
-        "-preset", "ultrafast",  # fastest encode, less RAM
-        "-crf", "23",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        str(output_path),
-    ]
-
+    # Save to cache
     try:
-        run_ffmpeg(command, logger=logger, label=f"render_segment")
-        return output_path.exists() and output_path.stat().st_size > 0
-    except FFmpegError as e:
+        cache_path.write_text(json.dumps({"crop_expr": expr, "crop_width": crop_width}), encoding="utf-8")
+    except Exception as e:
         if logger:
-            logger.error(f"Segment render failed: {e}")
-        return False
+            logger.warn(f"Failed to cache crop expression: {e}")
 
-
-def _concat_segments(
-    segment_paths: List[Path],
-    output_path: Path,
-    work_dir: Path,
-    logger: JobLogger | None = None,
-) -> str:
-    """
-    Concatenate all segments using ffmpeg concat demuxer.
-    This is a stream copy — no re-encode, instant, zero RAM overhead.
-    """
-    concat_list = work_dir / "concat_list.txt"
-
-    with open(concat_list, "w") as f:
-        for seg_path in segment_paths:
-            f.write(f"file '{seg_path.as_posix()}'\n")
-
-    command = [
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_list),
-        "-c", "copy",  # stream copy — no re-encode
-        "-movflags", "+faststart",
-        str(output_path),
-    ]
-
-    run_ffmpeg(command, logger=logger, label="concat_segments")
-    return str(output_path)
+    return expr, crop_width
 
 
 def render_vertical_reframe(
@@ -278,105 +193,47 @@ def render_vertical_reframe(
     logger: JobLogger | None = None,
 ) -> str:
     """
-    Main entry point.
-
-    Pipeline:
-      Python → YOLO (10 sample frames) → 10 crop positions
-      → 10 tiny ffmpeg jobs → concat → finished
-
-    Designed to stay well within 512MB RAM limit.
+    Legacy wrapper for rendering vertical reframe to a separate video file.
+    Uses the optimized single-pass FFmpeg crop expression instead of segment-concat.
     """
     suffix = clip_id or uuid.uuid4().hex[:8]
-    work_dir = STORAGE_DIR / "frames" / suffix
-    work_dir.mkdir(parents=True, exist_ok=True)
-
     output_path = CLIPS_DIR / f"reframed_{suffix}.mp4"
-
+    
     try:
-        # Step 1: Probe source dimensions
-        src_width, src_height = probe_dimensions(video_path, logger=logger)
-        if src_width == 0 or src_height == 0:
-            if logger:
-                logger.warn("Could not probe dimensions, using center crop fallback")
-            return _center_crop_fallback(video_path, output_path, logger=logger)
-
-        crop_width = int(src_height * (REFRAME_TARGET_WIDTH / REFRAME_TARGET_HEIGHT))
-        crop_width = min(crop_width, src_width)
-
-        if logger:
-            logger.info(f"Source: {src_width}x{src_height}, crop_width: {crop_width}")
-
-        # Step 2: Extract 10 tiny sample frames via ffmpeg
-        if logger:
-            logger.info(f"Step 1/4: Sampling {NUM_SAMPLE_POINTS} frames")
-        frame_paths = _sample_frames_with_ffmpeg(
-            video_path, NUM_SAMPLE_POINTS, duration, work_dir, logger=logger
+        crop_expr, crop_width = get_crop_expr_for_clip(
+            suffix, video_path, 0.0, duration, logger
         )
-
-        if not frame_paths:
-            if logger:
-                logger.warn("No frames extracted, using center crop fallback")
-            return _center_crop_fallback(video_path, output_path, logger=logger)
-
-        # Step 3: Run YOLO on each frame → get 10 crop positions
-        if logger:
-            logger.info("Step 2/4: Running YOLO person detection")
-        keyframes = _detect_crop_positions(
-            frame_paths, src_width, src_height, crop_width, duration, logger=logger
+        
+        # Probe height of the source video
+        src_height = REFRAME_TARGET_HEIGHT
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            src_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+            
+        filter_str = (
+            f"crop={crop_width}:{src_height}:{crop_expr}:0,"
+            f"scale={REFRAME_TARGET_WIDTH}:{REFRAME_TARGET_HEIGHT}"
         )
-
-        # Step 4: Render 10 tiny ffmpeg segments
-        if logger:
-            logger.info("Step 3/4: Rendering 10 segments")
-        segment_paths = []
-
-        for i in range(len(keyframes)):
-            seg_start = keyframes[i]["time"]
-            seg_end = keyframes[i + 1]["time"] if i + 1 < len(keyframes) else duration
-            crop_x = keyframes[i]["crop_x"]
-
-            seg_path = work_dir / f"seg_{i:03d}.mp4"
-
-            success = _render_segment(
-                video_path,
-                seg_start,
-                seg_end,
-                crop_x,
-                crop_width,
-                src_height,
-                seg_path,
-                logger=logger,
-            )
-
-            if success:
-                segment_paths.append(seg_path)
-                if logger:
-                    logger.info(f"Segment {i+1}/{len(keyframes)}: {seg_start:.2f}s-{seg_end:.2f}s crop_x={crop_x}")
-
-        if not segment_paths:
-            if logger:
-                logger.warn("No segments rendered, using center crop fallback")
-            return _center_crop_fallback(video_path, output_path, logger=logger)
-
-        # Step 5: Concat all segments (stream copy, instant)
-        if logger:
-            logger.info("Step 4/4: Concatenating segments")
-        result = _concat_segments(segment_paths, output_path, work_dir, logger=logger)
-
-        if logger:
-            logger.info(f"Reframe complete: {output_path}")
-
-        return result
-
+        
+        command = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-vf", filter_str,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-c:a", "copy",
+            str(output_path),
+        ]
+        
+        run_ffmpeg(command, logger=logger, label="legacy_reframe")
+        return str(output_path)
+        
     except Exception as exc:
         if logger:
-            logger.error(f"Reframe failed: {exc}, falling back to center crop")
+            logger.error(f"Legacy vertical reframe failed: {exc}, falling back to static center crop")
         return _center_crop_fallback(video_path, output_path, logger=logger)
-
-    finally:
-        # Clean up all temp files
-        import shutil
-        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _center_crop_fallback(
@@ -385,8 +242,7 @@ def _center_crop_fallback(
     logger: JobLogger | None = None,
 ) -> str:
     """
-    Simple center crop fallback when YOLO detection fails.
-    No YOLO, no tracking — just a static center crop to 9:16.
+    Static center crop fallback when YOLO/OpenCV fails.
     """
     if logger:
         logger.info("Using center crop fallback")
@@ -412,4 +268,4 @@ def _center_crop_fallback(
         run_ffmpeg(command, logger=logger, label="center_crop_fallback")
         return str(output_path)
     except FFmpegError as e:
-        raise ReframeError(f"Center crop fallback also failed: {e}") from e
+        raise RuntimeError(f"Center crop fallback also failed: {e}") from e
