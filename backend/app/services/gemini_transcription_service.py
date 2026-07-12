@@ -68,20 +68,54 @@ Return ONLY valid JSON, no markdown, in this exact shape:
 }
 """
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[uploaded_file, prompt],
-    )
+    from google.genai import types
+    import re
 
-    text = (response.text or "").strip()
-    text = text.replace("```json", "").replace("```", "").strip()
+    max_attempts = 3
+    result = None
+    last_exc = None
 
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError as exc:
-        if logger:
-            logger.error(f"Gemini returned invalid JSON: {text[:500]}")
-        raise RuntimeError(f"Gemini transcription returned invalid JSON: {exc}") from exc
+    for attempt in range(max_attempts):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[uploaded_file, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                )
+            )
+            text = (response.text or "").strip()
+            
+            # 1. Remove markdown code fences if present
+            if "```" in text:
+                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+                if match:
+                    text = match.group(1).strip()
+            
+            # 2. Extract first complete JSON object
+            first_brace = text.find("{")
+            last_brace = text.rfind("}")
+            if first_brace != -1 and last_brace != -1:
+                text = text[first_brace:last_brace + 1]
+
+            # 3. Parse JSON
+            result = json.loads(text)
+            break
+        except Exception as e:
+            last_exc = e
+            if logger:
+                logger.warn(f"Gemini transcription parsing failed (Attempt {attempt + 1}/{max_attempts}): {e}")
+                raw_text = response.text if 'response' in locals() and response.text else ""
+                snippet = raw_text[:500] + ("..." if len(raw_text) > 500 else "")
+                logger.warn(f"Raw Gemini response snippet: {snippet}")
+            time.sleep(2.0)
+
+    if result is None:
+        err_msg = str(last_exc)
+        if "API_KEY_INVALID" in err_msg or "invalid api key" in err_msg.lower() or "401" in err_msg:
+            raise RuntimeError(f"Invalid GEMINI_API_KEY: {last_exc}")
+        raise RuntimeError(f"Gemini transcription JSON decoding failed after {max_attempts} attempts: {last_exc}")
 
     raw_segments = result.get("segments", [])
     if not raw_segments:
