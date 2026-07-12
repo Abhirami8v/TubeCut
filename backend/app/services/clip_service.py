@@ -148,7 +148,8 @@ def render_clip_final(
     # 3. Construct filter complex
     filter_complex = []
     if auto_reframe and crop_expr:
-        filter_complex.append(f"crop={crop_width}:{video_height}:{crop_expr}:0")
+        escaped_crop_expr = crop_expr.replace(",", "\\,")
+        filter_complex.append(f"crop={crop_width}:{video_height}:{escaped_crop_expr}:0")
         filter_complex.append(f"scale={REFRAME_TARGET_WIDTH}:{REFRAME_TARGET_HEIGHT}")
 
     if has_captions and use_ass_filter and ass_path:

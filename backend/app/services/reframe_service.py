@@ -233,8 +233,9 @@ def render_vertical_reframe(
             src_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cap.release()
             
+        escaped_crop_expr = crop_expr.replace(",", "\\,")
         filter_str = (
-            f"crop={crop_width}:{src_height}:{crop_expr}:0,"
+            f"crop={crop_width}:{src_height}:{escaped_crop_expr}:0,"
             f"scale={REFRAME_TARGET_WIDTH}:{REFRAME_TARGET_HEIGHT}"
         )
         
