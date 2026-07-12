@@ -91,6 +91,9 @@ def _run_pipeline_inner(
     auto_reframe: bool,
     auto_caption_style_id: str | None,
 ) -> None:
+    import gc
+    import os
+
     # --- Step 1: download -------------------------------------------------
     _update_job(db, job, status=JobStatus.DOWNLOADING, progress=5, label="Downloading video")
     logger = JobLogger(job.id)
@@ -105,6 +108,7 @@ def _run_pipeline_inner(
     audio_path = audio_service.extract_audio(job.source_video_path, job_id=job.id)
     job.source_audio_path = audio_path
     db.commit()
+    gc.collect()
 
     # --- Step 3: transcribe --------------------------------------------------
     _update_job(db, job, status=JobStatus.TRANSCRIBING, progress=35, label="Transcribing speech")
@@ -112,9 +116,18 @@ def _run_pipeline_inner(
     job.transcript_json = json.dumps(transcript)
     db.commit()
 
+    # Clean up the audio file immediately to save disk space
+    try:
+        os.remove(audio_path)
+        logger.info(f"Cleaned up temporary audio track: {audio_path}")
+    except OSError:
+        pass
+    gc.collect()
+
     # --- Step 4: AI analysis / segmentation -----------------------------
     _update_job(db, job, status=JobStatus.ANALYZING, progress=50, label="Analyzing transcript for clip-worthy moments")
     candidates = gemini_service.analyze_transcript(transcript, target_clip_count or TARGET_CLIP_COUNT)
+    gc.collect()
 
     # --- Step 5: build Clip rows with hook scores -------------------------
     _update_job(db, job, status=JobStatus.SEGMENTING, progress=60, label="Scoring and segmenting clips")
@@ -169,6 +182,7 @@ def _run_pipeline_inner(
         clip_rows.append(clip)
 
     db.commit()
+    gc.collect()
 
     # --- Step 6: render each clip (trim -> [reframe] -> burn captions) ----
     _update_job(db, job, status=JobStatus.RENDERING_CLIPS, progress=70, label="Rendering clips")
@@ -217,6 +231,16 @@ def _run_pipeline_inner(
             )
 
     _update_job(db, job, status=JobStatus.COMPLETED, progress=100, label="Done")
+
+    # Clean up the large source video file to save disk space
+    if job.source_video_path:
+        try:
+            os.remove(job.source_video_path)
+            logger.info(f"Cleaned up large source video file: {job.source_video_path}")
+        except OSError:
+            pass
+
+    gc.collect()
 
 
 def _render_single_clip(db: Session, job: Job, clip: Clip, auto_reframe: bool) -> None:

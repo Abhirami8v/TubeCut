@@ -19,6 +19,8 @@ from app.core.config import (
     THUMBNAILS_DIR,
     REFRAME_TARGET_HEIGHT,
     REFRAME_TARGET_WIDTH,
+    FAST_ENCODE_PRESET,
+    FINAL_ENCODE_PRESET,
 )
 from app.core.logging_utils import JobLogger
 from app.services.ffmpeg_utils import run_ffmpeg
@@ -46,7 +48,7 @@ def render_raw_clip(source_video_path: str, start_time: float, end_time: float, 
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        FAST_ENCODE_PRESET,
         "-crf",
         "20",
         "-pix_fmt",
@@ -178,7 +180,7 @@ def render_clip_final(
 
         command.extend([
             "-c:v", "libx264",
-            "-preset", "veryfast",
+            "-preset", FINAL_ENCODE_PRESET,
             "-crf", "20",
             "-pix_fmt", "yuv420p",
             "-tag:v", "avc1",
@@ -210,7 +212,7 @@ def render_clip_final(
 
         command.extend([
             "-c:v", "libx264",
-            "-preset", "veryfast",
+            "-preset", FAST_ENCODE_PRESET,
             "-crf", "20",
             "-pix_fmt", "yuv420p",
             "-tag:v", "avc1",

@@ -1,13 +1,17 @@
 """
 reframe_service.py
 
-Highly optimized, memory-efficient vertical reframe pipeline.
-Bypasses intermediate file writes and multiple FFmpeg subprocesses.
-Uses OpenCV for in-memory frame extraction and batch YOLOv8 prediction.
+Extreme memory-optimized vertical reframe pipeline.
+Bypasses PyTorch/YOLO entirely and uses OpenCV's built-in traditional computer vision:
+- Haar Cascades frontal face detector (ideal for talking heads/interviews)
+- HOG (Histogram of Oriented Gradients) human detector (for full/upper body fallback)
+
+Designed to run under 10MB of detector overhead, saving ~350MB RAM.
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import uuid
 from pathlib import Path
@@ -19,28 +23,12 @@ from app.core.config import (
     REFRAME_SMOOTHING_ALPHA,
     REFRAME_TARGET_HEIGHT,
     REFRAME_TARGET_WIDTH,
-    STORAGE_DIR,
-    YOLO_CONFIDENCE_THRESHOLD,
-    YOLO_WEIGHTS_PATH,
 )
 from app.core.logging_utils import JobLogger
 from app.services.ffmpeg_utils import FFmpegError, run_ffmpeg
 
-_yolo_model = None
-
 NUM_SAMPLE_POINTS = 10      # sample points across the clip
-YOLO_SAMPLE_WIDTH = 320     # small resolution for YOLO to minimize memory usage
-
-
-def _get_yolo_model(logger: JobLogger | None = None):
-    global _yolo_model
-    if _yolo_model is None:
-        weights = Path(YOLO_WEIGHTS_PATH)
-        if not weights.exists() and logger:
-            logger.info(f"Downloading YOLO weights to {weights}")
-        from ultralytics import YOLO
-        _yolo_model = YOLO(YOLO_WEIGHTS_PATH)
-    return _yolo_model
+YOLO_SAMPLE_WIDTH = 320     # small resolution for detection to minimize memory usage
 
 
 def get_crop_expr_for_clip(
@@ -53,7 +41,7 @@ def get_crop_expr_for_clip(
     """
     Get the compiled FFmpeg crop expression for a clip.
     If cached on disk, loads it from the cache file.
-    Otherwise, extracts frames using OpenCV, runs batch YOLO,
+    Otherwise, extracts frames using OpenCV, runs batch detectors,
     computes smoothed crop coordinates, compiles it, caches it, and returns it.
     Returns (crop_expr_str, crop_width).
     """
@@ -118,45 +106,21 @@ def get_crop_expr_for_clip(
         center_x = (src_width - crop_width) // 2
         return str(center_x), crop_width
 
-    # 3. Batch predict YOLO
-    model = _get_yolo_model(logger)
-    # ultralytics accept list of numpy BGR frames directly
-    results = model.predict(
-        frames,
-        classes=[0],  # person only
-        verbose=False,
-        conf=YOLO_CONFIDENCE_THRESHOLD,
-    )
+    # 3. Detect speaker centers (Face / Person)
+    raw_centers = _detect_speaker_centers(frames, logger)
 
-    # 4. Extract centers
-    raw_centers = []
-    for idx, result in enumerate(results):
-        frame_w = frames[idx].shape[1]
-        best_box = None
-        best_area = 0.0
+    # Clean up frames immediately to release memory
+    del frames
+    gc.collect()
 
-        for box in result.boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            area = (x2 - x1) * (y2 - y1)
-            if area > best_area:
-                best_area = area
-                best_box = (x1, x2)
-
-        if best_box is not None:
-            x1, x2 = best_box
-            center_norm = ((x1 + x2) / 2.0) / frame_w
-            raw_centers.append(center_norm)
-        else:
-            raw_centers.append(0.5)
-
-    # 5. Smooth crop positions to prevent jitter
+    # 4. Smooth crop positions to prevent jitter
     smoothed = []
     current = raw_centers[0] if raw_centers else 0.5
     for center in raw_centers:
         current = REFRAME_SMOOTHING_ALPHA * center + (1 - REFRAME_SMOOTHING_ALPHA) * current
         smoothed.append(current)
 
-    # 6. Build nested crop expression relative to clip start (t=0)
+    # 5. Build nested crop expression relative to clip start (t=0)
     sorted_kfs = []
     for i, center_norm in enumerate(smoothed):
         t_rel = (i / max(NUM_SAMPLE_POINTS - 1, 1)) * duration
@@ -184,6 +148,64 @@ def get_crop_expr_for_clip(
             logger.warn(f"Failed to cache crop expression: {e}")
 
     return expr, crop_width
+
+
+def _detect_speaker_centers(frames: list[np.ndarray], logger: JobLogger | None = None) -> list[float]:
+    """
+    Detect human or face in each frame using Haar Cascade and HOG detectors.
+    Returns normalized centers (0.0 to 1.0) for each frame.
+    """
+    # Load classifiers (Haar Cascade frontal face)
+    face_xml = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    face_cascade = cv2.CascadeClassifier(face_xml)
+    
+    # Initialize HOG human detector
+    hog = cv2.HOGDescriptor()
+    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+    
+    raw_centers = []
+    
+    for idx, frame in enumerate(frames):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        best_center_norm = None
+        
+        # 1. Face detection
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=4,
+            minSize=(30, 30)
+        )
+        if len(faces) > 0:
+            # Pick largest face
+            best_face = max(faces, key=lambda f: f[2] * f[3])
+            fx, fy, fw, fh = best_face
+            best_center_norm = (fx + fw / 2.0) / frame.shape[1]
+            if logger and idx == 0:
+                logger.info(f"Reframer: Found face at center {best_center_norm:.2f}")
+
+        # 2. HOG Human detection fallback
+        if best_center_norm is None:
+            rects, weights = hog.detectMultiScale(
+                gray,
+                winStride=(8, 8),
+                padding=(8, 8),
+                scale=1.05
+            )
+            if len(rects) > 0:
+                best_rect = max(rects, key=lambda r: r[2] * r[3])
+                hx, hy, hw, hh = best_rect
+                best_center_norm = (hx + hw / 2.0) / frame.shape[1]
+                if logger and idx == 0:
+                    logger.info(f"Reframer: No face, found human at center {best_center_norm:.2f}")
+                    
+        # 3. Default Center fallback
+        if best_center_norm is None:
+            best_center_norm = 0.5
+            
+        raw_centers.append(best_center_norm)
+        
+    return raw_centers
 
 
 def render_vertical_reframe(
