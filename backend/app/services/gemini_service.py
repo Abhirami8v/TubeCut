@@ -1,14 +1,6 @@
 """
 gemini_service.py
-
-Uses Gemini to analyze a full transcript and identify the most
-"clip-worthy" moments (meaningful segmentation rather than fixed-length
-chopping). Returns structured candidate clips with a start/end time, an
-AI confidence score, and the model's stated reasoning.
-
-If the Gemini call fails for any reason (missing key, network, bad
-JSON), we fall back to a simple silence/sentence-boundary segmenter so
-the pipeline still produces usable clips instead of erroring out.
+Uses Gemini to find viral clip moments from transcript.
 """
 
 from __future__ import annotations
@@ -28,71 +20,51 @@ class CandidateClip(TypedDict):
 
 
 def analyze_transcript(transcript: List[dict], target_clip_count: int | None = None) -> List[CandidateClip]:
-    """
-    Identify the most clip-worthy moments in `transcript` using Gemini.
-    Falls back to a heuristic segmenter if the API call fails.
-    """
     count = target_clip_count or TARGET_CLIP_COUNT
 
     if GEMINI_API_KEY:
         try:
             return _analyze_with_gemini(transcript, count)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"[gemini_service] Gemini analysis failed, using fallback: {exc}")
 
     return _fallback_segmentation(transcript, count)
 
 
 def _analyze_with_gemini(transcript: List[dict], count: int) -> List[CandidateClip]:
-    from google import genai
-    from google.genai import types
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    import google.generativeai as genai
 
-    simple_transcript = [
-        {
-            "start": s["start"],
-            "end": s["end"],
-            "text": s["text"],
-        }
-         for s in transcript
-    ]
+    genai.configure(api_key=GEMINI_API_KEY)
 
-    transcript_json = json.dumps(simple_transcript, ensure_ascii=False)
+    transcript_json = json.dumps(transcript, indent=2)
 
     prompt = f"""
 You are a world-class short-form video editor identifying viral moments.
 
-Analyze this transcript and identify the {count} MOST compelling, self-contained moments
+Analyze this transcript and identify the {count} MOST compelling moments
 that would work as standalone short-form clips.
 
 Prioritize moments with:
-1. Strong opening hooks (a question, bold claim, or surprising statement in the first 3 seconds)
-2. Curiosity gaps that make viewers want to keep watching
-3. Emotional stories, transformations, or shocking facts
-4. Clear payoff / resolution within the clip
-5. Self-contained meaning (a viewer with no other context understands it)
-
-Avoid:
-- Greetings, intros, outros, sponsor reads, filler, dead air
-- Cutting off mid-sentence or mid-thought
-- Overlapping time ranges between clips
+1. Strong opening hooks
+2. Curiosity gaps
+3. Emotional stories or shocking facts
+4. Clear payoff within the clip
+5. Self-contained meaning
 
 Rules:
 - Return EXACTLY {count} clips
 - Each clip must be between {MIN_CLIP_SECONDS} and {MAX_CLIP_SECONDS} seconds
-- Use ONLY timestamps that appear in the transcript
-- Start as close to the hook as possible, end on a natural sentence boundary
-- confidence_score is 0-100: how confident you are this is genuinely clip-worthy content
+- No overlapping time ranges
 
-Return ONLY valid JSON, no markdown fences, in this exact shape:
+Return ONLY valid JSON, no markdown:
 {{
   "clips": [
     {{
       "start_time": 0,
       "end_time": 30,
       "confidence_score": 92,
-      "reason": "Why this moment works as a standalone clip",
-      "title": "Short, punchy title for this clip"
+      "reason": "Why this works as a standalone clip",
+      "title": "Short punchy title"
     }}
   ]
 }}
@@ -101,44 +73,24 @@ Transcript:
 {transcript_json}
 """
 
-    response = client.models.generate_content(
-        model=f"models/{GEMINI_MODEL}",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.2,
-    
-        ),
-    )   
+    model = genai.GenerativeModel(model_name=GEMINI_MODEL)
+    response = model.generate_content(prompt)
 
-    text = (response.text or "").strip()
-    
-    # Robust JSON extraction: locate the JSON object bounding braces
-    first_brace = text.find("{")
-    last_brace = text.rfind("}")
-    if first_brace != -1 and last_brace != -1:
-        text = text[first_brace:last_brace + 1]
+    text = response.text.strip()
+    text = text.replace("```json", "").replace("```", "").strip()
 
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
-        print("========== RAW GEMINI RESPONSE ==========")
-        print(text)
-        raise
+    result = json.loads(text)
     clips = result.get("clips", [])
-    if not isinstance(clips, list):
-        raise ValueError("Gemini returned an invalid clips format.")
+
     candidates: List[CandidateClip] = []
     for clip in clips:
-        candidates.append(
-            {
-                "start_time": float(clip.get("start_time", 0)),
-                "end_time": float(clip.get("end_time", 0)),
-                "confidence_score": float(clip.get("confidence_score", 70)),
-                "reason": clip.get("reason", ""),
-                "title": clip.get("title", "Untitled Clip"),
-            }
-        )
+        candidates.append({
+            "start_time": float(clip.get("start_time", 0)),
+            "end_time": float(clip.get("end_time", 0)),
+            "confidence_score": float(clip.get("confidence_score", 70)),
+            "reason": clip.get("reason", ""),
+            "title": clip.get("title", "Untitled Clip"),
+        })
 
     if not candidates:
         raise ValueError("Gemini returned zero clips")
@@ -147,57 +99,35 @@ Transcript:
 
 
 def _fallback_segmentation(transcript: List[dict], count: int) -> List[CandidateClip]:
-    """
-    Deterministic fallback: build exactly `count` clips of engaging
-    short-form length (25-45 seconds) spaced evenly across the video.
-    """
     if not transcript:
         return []
 
     total_duration = transcript[-1]["end"]
-    
-    import random
+    target_duration = min(MAX_CLIP_SECONDS, max(MIN_CLIP_SECONDS, total_duration / max(count, 1)))
+
     candidates: List[CandidateClip] = []
-    segment_duration = total_duration / max(count, 1)
+    current_start = transcript[0]["start"]
+    current_text_segments: List[str] = []
 
-    for idx in range(count):
-        ideal_start = idx * segment_duration
-        
-        # Find closest start segment
-        start_seg = min(transcript, key=lambda s: abs(s["start"] - ideal_start))
-        start_time = start_seg["start"]
+    for i, segment in enumerate(transcript):
+        current_text_segments.append(segment["text"])
+        elapsed = segment["end"] - current_start
+        is_last = i == len(transcript) - 1
 
-        # Target end time: random engaging duration between 25.0 and 55.0 seconds
-        min_dur = min(25.0, total_duration)
-        max_dur = min(55.0, total_duration)
-        if min_dur >= max_dur:
-            target_duration = total_duration
-        else:
-            target_duration = random.uniform(min_dur, max_dur)
-
-        ideal_end = start_time + target_duration
-        end_seg = min(transcript, key=lambda s: abs(s["end"] - ideal_end))
-        end_time = end_seg["end"]
-
-        if end_time <= start_time:
-            end_time = start_time + target_duration
-
-        # Accumulate text for clip title
-        text_pieces = []
-        for s in transcript:
-            if start_time <= s["start"] <= end_time:
-                text_pieces.append(s["text"])
-
-        title = " ".join(text_pieces)[:40].strip() or f"Highlight Moment {idx + 1}"
-
-        candidates.append(
-            {
-                "start_time": round(start_time, 2),
-                "end_time": round(end_time, 2),
+        if elapsed >= target_duration or is_last:
+            candidates.append({
+                "start_time": round(current_start, 2),
+                "end_time": round(segment["end"], 2),
                 "confidence_score": 60.0,
-                "reason": f"Auto-segmented fallback moment from part {idx + 1} of the video.",
-                "title": title,
-            }
-        )
+                "reason": "Auto-segmented based on transcript pacing.",
+                "title": " ".join(current_text_segments)[:48].strip() or "Untitled Clip",
+            })
 
-    return candidates
+            if len(candidates) >= count:
+                break
+
+            if i + 1 < len(transcript):
+                current_start = transcript[i + 1]["start"]
+            current_text_segments = []
+
+    return candidates[:count]

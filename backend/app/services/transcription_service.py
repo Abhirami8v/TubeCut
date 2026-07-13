@@ -1,250 +1,138 @@
 """
-transcription_service.py
-
-Wraps faster-whisper for speech-to-text with word-level timestamps. The
-model is loaded lazily (on first use) so importing this module -- e.g.
-during API route registration -- doesn't pay model-load cost at import
-time, and so the whole backend can boot even if model weights aren't
-downloaded yet.
+gemini_transcription_service.py
+Transcribes audio using Google Gemini via google-generativeai library.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import time
+from typing import List
 
-from typing import List, TypedDict
-
-from app.core.config import WHISPER_COMPUTE_TYPE, WHISPER_DEVICE, WHISPER_MODEL_SIZE
-
-_model = None
-
-
-class WordTimestamp(TypedDict):
-    word: str
-    start: float
-    end: float
+from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
+from app.core.logging_utils import JobLogger
+from app.services.transcript_utils import TranscriptSegment, WordTimestamp
 
 
-class TranscriptSegment(TypedDict):
-    start: float
-    end: float
-    text: str
-    words: List[WordTimestamp]
-
-
-def _get_model():
-    global _model
-    if _model is None:
-        from faster_whisper import WhisperModel
-
-        _model = WhisperModel(
-            WHISPER_MODEL_SIZE,
-            device=WHISPER_DEVICE,
-            compute_type=WHISPER_COMPUTE_TYPE,
-        )
-    return _model
-
-
-def _transcribe_with_gemini(audio_path: str) -> List[TranscriptSegment]:
-    """
-    Fallback transcription service using Google's Gemini API.
-    Uploads the audio track to Gemini, prompts the model to transcribe with
-    exact word-level timestamps in structured JSON, and deletes the uploaded audio file.
-    """
-    from google import genai
-    from google.genai import types
-    from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
-
+def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[TranscriptSegment]:
     if not GEMINI_API_KEY:
-        raise ValueError("Whisper transcription failed, and no GEMINI_API_KEY is configured for fallback.")
+        raise RuntimeError("GEMINI_API_KEY is not set.")
 
-    print(f"[transcription_service] Whisper failed or is unavailable. Falling back to Gemini transcription for {audio_path}...")
-    
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
-    print(f"[transcription_service] Uploading audio file to Gemini...")
-    uploaded_file = client.files.upload(path=audio_path)
-    
+    import google.generativeai as genai
+
+    genai.configure(api_key=GEMINI_API_KEY)
+
+    if logger:
+        logger.info(f"Uploading audio to Gemini: {audio_path}")
+
+    # Upload the audio file
+    audio_file = genai.upload_file(
+        path=audio_path,
+        mime_type="audio/wav",
+    )
+
+    # Wait for file to be processed
+    if logger:
+        logger.info("Waiting for Gemini to process audio file...")
+
+    max_wait = 120
+    waited = 0
+    while audio_file.state.name == "PROCESSING":
+        if waited >= max_wait:
+            raise TimeoutError("Gemini file processing timed out after 120s")
+        time.sleep(3)
+        waited += 3
+        audio_file = genai.get_file(audio_file.name)
+
+    if audio_file.state.name != "ACTIVE":
+        raise RuntimeError(f"Gemini file processing failed: {audio_file.state.name}")
+
+    if logger:
+        logger.info("Audio processed, requesting transcription")
+
+    model = genai.GenerativeModel(model_name=GEMINI_MODEL)
+
+    prompt = """
+Transcribe this audio completely and accurately.
+
+Break into natural segments of one sentence each.
+For each segment estimate start and end time in seconds.
+
+Return ONLY valid JSON, no markdown backticks, in this exact format:
+{
+  "segments": [
+    {"start": 0.0, "end": 3.2, "text": "exact spoken words here"}
+  ]
+}
+
+Cover the entire audio from start to finish.
+"""
+
+    response = model.generate_content([audio_file, prompt])
+
+    text = (response.text or "").strip()
+    text = text.replace("```json", "").replace("```", "").strip()
+
+    if logger:
+        logger.debug(f"Gemini response preview: {text[:200]}")
+
     try:
-        prompt = """
-        You are a highly accurate audio transcription tool.
-        Analyze the audio track and transcribe it into text with exact word-level timestamps.
-        You must output ONLY valid JSON matching this exact structure, with no markdown fences, no backticks, and no extra text:
-        
-        {
-          "segments": [
-            {
-              "start": 0.0,
-              "end": 2.5,
-              "text": "Hello world",
-              "words": [
-                {"word": "Hello", "start": 0.0, "end": 1.2},
-                {"word": "world", "start": 1.2, "end": 2.5}
-              ]
-            }
-          ]
-        }
-        
-        Ensure that segment start/end times cover the words inside them, and every word has a start and end timestamp.
-        """
-        
-        print(f"[transcription_service] Generating transcription content using {GEMINI_MODEL}...")
-        response = client.models.generate_content(
-            model=f"models/{GEMINI_MODEL}",
-            contents=[uploaded_file, prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            )
-        )
-        
-        text = response.text.strip()
         result = json.loads(text)
-        segments_raw = result.get("segments", [])
-        
-        transcript: List[TranscriptSegment] = []
-        for segment in segments_raw:
-            words: List[WordTimestamp] = []
-            for w in segment.get("words", []):
-                words.append({
-                    "word": str(w["word"]).strip(),
-                    "start": round(float(w["start"]), 2),
-                    "end": round(float(w["end"]), 2),
-                })
-            transcript.append({
-                "start": round(float(segment["start"]), 2),
-                "end": round(float(segment["end"]), 2),
-                "text": str(segment.get("text", "")).strip(),
-                "words": words
-            })
-            
-        print(f"[transcription_service] Gemini transcription completed successfully with {len(transcript)} segments.")
-        return transcript
-        
-    except Exception as gemini_exc:
-        print(f"[transcription_service] Gemini transcription fallback failed: {gemini_exc}")
-        raise gemini_exc
-    finally:
-        try:
-            print(f"[transcription_service] Cleaning up uploaded file {uploaded_file.name} from Gemini...")
-            client.files.delete(name=uploaded_file.name)
-        except Exception as delete_exc:
-            print(f"[transcription_service] Failed to delete uploaded file from Gemini storage: {delete_exc}")
+    except json.JSONDecodeError as exc:
+        if logger:
+            logger.error(f"Failed to parse Gemini JSON: {text[:500]}")
+        raise RuntimeError(f"Gemini returned invalid JSON: {exc}") from exc
 
+    raw_segments = result.get("segments", [])
+    if not raw_segments:
+        if logger:
+            logger.warn("Gemini returned zero segments")
+        return []
 
-def transcribe_audio(audio_path: str, logger=None) -> List[TranscriptSegment]:
-    """
-    Transcribe the audio file at `audio_path` and return a list of
-    segments, each with word-level timestamps.
-    """
+    transcript: List[TranscriptSegment] = []
+    for seg in raw_segments:
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", start + 1.0))
+        seg_text = (seg.get("text") or "").strip()
+        if end <= start:
+            end = start + 0.5
+        if not seg_text:
+            continue
+        words = _synthesize_word_timestamps(seg_text, start, end)
+        transcript.append({
+            "start": round(start, 2),
+            "end": round(end, 2),
+            "text": seg_text,
+            "words": words,
+        })
+
+    transcript.sort(key=lambda s: s["start"])
+
+    if logger:
+        total_words = sum(len(s["words"]) for s in transcript)
+        logger.info(f"Transcription complete: {len(transcript)} segments, {total_words} words")
+
+    # Clean up uploaded file to save storage
     try:
-        model = _get_model()
+        genai.delete_file(audio_file.name)
+    except Exception:
+        pass
 
-        segments, _info = model.transcribe(
-            audio_path,
-            beam_size=5,
-            word_timestamps=True,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 1000},
-        )
-
-        transcript: List[TranscriptSegment] = []
-
-        for segment in segments:
-            words: List[WordTimestamp] = [
-                {
-                    "word": word.word.strip(),
-                    "start": round(word.start, 2),
-                    "end": round(word.end, 2),
-                }
-                for word in (segment.words or [])
-            ]
-
-            # Fallback: if Whisper returned segment-level text but somehow no
-            # word-level timestamps (can happen on some audio), synthesize
-            # evenly-spaced word timings from the segment span so downstream
-            # caption-block building still has something to work with instead
-            # of silently dropping this segment's captions.
-            if not words and segment.text.strip():
-                words = _synthesize_word_timestamps(segment.text.strip(), segment.start, segment.end)
-
-            transcript.append(
-                {
-                    "start": round(segment.start, 2),
-                    "end": round(segment.end, 2),
-                    "text": segment.text.strip(),
-                    "words": words,
-                }
-            )
-
-        if not transcript:
-            print(
-                f"[transcription_service] WARNING: Whisper returned zero segments for {audio_path}. "
-                "No captions will be generated for clips from this video. This usually means VAD "
-                "filtered out the whole track, or the audio is silent/corrupted."
-            )
-
-        return transcript
-
-    except Exception as exc:
-        print(f"[transcription_service] Whisper transcription failed: {exc}")
-        try:
-            return _transcribe_with_gemini(audio_path)
-        except Exception as gemini_exc:
-            print(f"[transcription_service] Both Whisper and Gemini fallback failed: {gemini_exc}")
-            raise gemini_exc
+    return transcript
 
 
 def _synthesize_word_timestamps(text: str, start: float, end: float) -> List[WordTimestamp]:
-    """Evenly distribute words across [start, end] when Whisper gives us text but no word timings."""
     words = text.split()
     if not words:
         return []
     duration = max(0.01, end - start)
     step = duration / len(words)
-    result: List[WordTimestamp] = []
-    for i, w in enumerate(words):
-        result.append(
-            {
-                "word": w,
-                "start": round(start + i * step, 2),
-                "end": round(start + (i + 1) * step, 2),
-            }
-        )
-    return result
-
-
-def flatten_words(transcript: List[TranscriptSegment]) -> List[WordTimestamp]:
-    """Flatten all word timestamps across every segment into one list."""
-    words: List[WordTimestamp] = []
-    for segment in transcript:
-        words.extend(segment.get("words", []))
-    return words
-
-
-def words_in_range(transcript: List[TranscriptSegment], start: float, end: float) -> List[WordTimestamp]:
-    """
-    Return word timestamps that fall within [start, end] of the original
-    source video, re-based so `start` becomes time zero. Useful for
-    building per-clip caption data from a full-video transcript.
-    """
-    result: List[WordTimestamp] = []
-    for word in flatten_words(transcript):
-        if start <= word["start"] <= end:
-            result.append(
-                {
-                    "word": word["word"],
-                    "start": round(word["start"] - start, 2),
-                    "end": round(word["end"] - start, 2),
-                }
-            )
-    return result
-
-
-def text_in_range(transcript: List[TranscriptSegment], start: float, end: float) -> str:
-    """Return the concatenated transcript text overlapping [start, end]."""
-    pieces = [
-        segment["text"]
-        for segment in transcript
-        if segment["end"] >= start and segment["start"] <= end
+    return [
+        {
+            "word": w,
+            "start": round(start + i * step, 2),
+            "end": round(start + (i + 1) * step, 2),
+        }
+        for i, w in enumerate(words)
     ]
-    return " ".join(pieces).strip()
