@@ -18,9 +18,15 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is not set.")
 
+    import httpx
     from groq import Groq
 
-    client = Groq(api_key=GROQ_API_KEY)
+    # Pass an explicit httpx.Client to avoid proxy env var conflicts
+    # in cloud deployment environments (Render, Railway, etc.)
+    client = Groq(
+        api_key=GROQ_API_KEY,
+        http_client=httpx.Client(),
+    )
 
     if logger:
         logger.info(f"Reading audio file: {audio_path}")
