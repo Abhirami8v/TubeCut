@@ -58,16 +58,15 @@ CORS_ORIGINS = [
 # ---------------------------------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-print("========== CONFIG ==========")
-print("Gemini Key Loaded:", bool(GEMINI_API_KEY))
-print("Gemini Key Length:", len(GEMINI_API_KEY))
-print("============================")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 if "2.5-flash" in GEMINI_MODEL:
     GEMINI_MODEL = "gemini-3.5-flash"
 elif "2.5-pro" in GEMINI_MODEL:
     GEMINI_MODEL = "gemini-3.1-pro"
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
 YOUTUBE_DATA_API_KEY = os.getenv("YOUTUBE_DATA_API_KEY", "")
 PROXY_URL = os.getenv("PROXY_URL", "")
 # yt-dlp configurations to bypass cloud host IP blocking
