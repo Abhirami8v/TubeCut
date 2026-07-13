@@ -57,31 +57,27 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
     if logger:
         logger.debug(f"Groq response received, type: {type(transcription).__name__}")
 
-    # Extract segments and word timestamps from Groq's response
-    # The verbose_json response has:
-    #   transcription.text       -> full text
-    #   transcription.segments   -> list of segment dicts with start, end, text
-    #   transcription.words      -> list of word dicts with word, start, end
+    # Convert the Pydantic model to a dict to reliably access all fields
+    data = transcription.model_dump()
 
-    raw_segments = getattr(transcription, "segments", None)
-    raw_words = getattr(transcription, "words", None)
+    raw_segments = data.get("segments") or []
+    raw_words = data.get("words") or []
 
     # Build a word map: for each word, we have {word, start, end}
     word_list: List[WordTimestamp] = []
-    if raw_words:
-        for w in raw_words:
-            word_text = (getattr(w, "word", "") or "").strip()
-            if not word_text:
-                continue
-            word_start = float(getattr(w, "start", 0.0))
-            word_end = float(getattr(w, "end", word_start + 0.1))
-            if word_end <= word_start:
-                word_end = word_start + 0.1
-            word_list.append({
-                "word": word_text,
-                "start": round(word_start, 2),
-                "end": round(word_end, 2),
-            })
+    for w in raw_words:
+        word_text = (w.get("word") or "").strip()
+        if not word_text:
+            continue
+        word_start = float(w.get("start", 0.0))
+        word_end = float(w.get("end", word_start + 0.1))
+        if word_end <= word_start:
+            word_end = word_start + 0.1
+        word_list.append({
+            "word": word_text,
+            "start": round(word_start, 2),
+            "end": round(word_end, 2),
+        })
 
     if not raw_segments:
         if logger:
@@ -90,9 +86,9 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
 
     transcript: List[TranscriptSegment] = []
     for seg in raw_segments:
-        seg_start = float(getattr(seg, "start", 0.0))
-        seg_end = float(getattr(seg, "end", seg_start + 1.0))
-        seg_text = (getattr(seg, "text", "") or "").strip()
+        seg_start = float(seg.get("start", 0.0))
+        seg_end = float(seg.get("end", seg_start + 1.0))
+        seg_text = (seg.get("text") or "").strip()
         if seg_end <= seg_start:
             seg_end = seg_start + 0.5
         if not seg_text:
