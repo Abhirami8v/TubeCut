@@ -30,8 +30,11 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
     print("GENAI FILE:", genai.__file__)
     print("GENAI VERSION:", getattr(genai, "__version__", "NO VERSION"))
     print("ENTERED transcribe_audio()")
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
+  
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options={"api_version": "v1"}
+    )
     print("UPLOAD SIGNATURE:", inspect.signature(client.files.upload))
    
     mime_type = mimetypes.guess_type(audio_path)[0] or "audio/wav"
@@ -78,7 +81,7 @@ Return ONLY valid JSON, no markdown, in this exact shape:
     for attempt in range(max_attempts):
         try:
             response = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=f"models/{GEMINI_MODEL}",
                 contents=[uploaded_file, prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",

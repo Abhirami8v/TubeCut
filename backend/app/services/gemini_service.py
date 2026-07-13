@@ -102,7 +102,7 @@ Transcript:
 """
 
     response = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=f"models/{GEMINI_MODEL}",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",

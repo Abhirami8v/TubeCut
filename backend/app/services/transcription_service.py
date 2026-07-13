@@ -90,7 +90,7 @@ def _transcribe_with_gemini(audio_path: str) -> List[TranscriptSegment]:
         
         print(f"[transcription_service] Generating transcription content using {GEMINI_MODEL}...")
         response = client.models.generate_content(
-            model=GEMINI_MODEL,
+            model=f"models/{GEMINI_MODEL}",
             contents=[uploaded_file, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
