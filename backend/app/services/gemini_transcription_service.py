@@ -1,12 +1,11 @@
 """
 gemini_transcription_service.py
-Transcribes audio using Google Gemini via google-generativeai library.
+Transcribes audio using Google Gemini via google-genai library.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import time
 from typing import List
 
@@ -19,42 +18,26 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set.")
 
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    genai.configure(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     if logger:
         logger.info(f"Uploading audio to Gemini: {audio_path}")
 
-    # Upload the audio file
-    audio_file = genai.upload_file(
-        path=audio_path,
-        mime_type="audio/wav",
-    )
+    # Upload audio file
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read()
 
-    # Wait for file to be processed
-    if logger:
-        logger.info("Waiting for Gemini to process audio file...")
-
-    max_wait = 120
-    waited = 0
-    while audio_file.state.name == "PROCESSING":
-        if waited >= max_wait:
-            raise TimeoutError("Gemini file processing timed out after 120s")
-        time.sleep(3)
-        waited += 3
-        audio_file = genai.get_file(audio_file.name)
-
-    if audio_file.state.name != "ACTIVE":
-        raise RuntimeError(f"Gemini file processing failed: {audio_file.state.name}")
-
-    if logger:
-        logger.info("Audio processed, requesting transcription")
-
-    model = genai.GenerativeModel(model_name=GEMINI_MODEL)
-
-    prompt = """
-Transcribe this audio completely and accurately.
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[
+            types.Part.from_bytes(
+                data=audio_bytes,
+                mime_type="audio/wav",
+            ),
+            """Transcribe this audio completely and accurately.
 
 Break into natural segments of one sentence each.
 For each segment estimate start and end time in seconds.
@@ -66,10 +49,9 @@ Return ONLY valid JSON, no markdown backticks, in this exact format:
   ]
 }
 
-Cover the entire audio from start to finish.
-"""
-
-    response = model.generate_content([audio_file, prompt])
+Cover the entire audio from start to finish."""
+        ],
+    )
 
     text = (response.text or "").strip()
     text = text.replace("```json", "").replace("```", "").strip()
@@ -112,12 +94,6 @@ Cover the entire audio from start to finish.
     if logger:
         total_words = sum(len(s["words"]) for s in transcript)
         logger.info(f"Transcription complete: {len(transcript)} segments, {total_words} words")
-
-    # Clean up uploaded file to save storage
-    try:
-        genai.delete_file(audio_file.name)
-    except Exception:
-        pass
 
     return transcript
 

@@ -32,9 +32,9 @@ def analyze_transcript(transcript: List[dict], target_clip_count: int | None = N
 
 
 def _analyze_with_gemini(transcript: List[dict], count: int) -> List[CandidateClip]:
-    import google.generativeai as genai
+    from google import genai
 
-    genai.configure(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     transcript_json = json.dumps(transcript, indent=2)
 
@@ -56,7 +56,7 @@ Rules:
 - Each clip must be between {MIN_CLIP_SECONDS} and {MAX_CLIP_SECONDS} seconds
 - No overlapping time ranges
 
-Return ONLY valid JSON, no markdown:
+Return ONLY valid JSON, no markdown backticks, in this exact format:
 {{
   "clips": [
     {{
@@ -73,10 +73,12 @@ Transcript:
 {transcript_json}
 """
 
-    model = genai.GenerativeModel(model_name=GEMINI_MODEL)
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+    )
 
-    text = response.text.strip()
+    text = (response.text or "").strip()
     text = text.replace("```json", "").replace("```", "").strip()
 
     result = json.loads(text)
@@ -103,7 +105,10 @@ def _fallback_segmentation(transcript: List[dict], count: int) -> List[Candidate
         return []
 
     total_duration = transcript[-1]["end"]
-    target_duration = min(MAX_CLIP_SECONDS, max(MIN_CLIP_SECONDS, total_duration / max(count, 1)))
+    target_duration = min(
+        MAX_CLIP_SECONDS,
+        max(MIN_CLIP_SECONDS, total_duration / max(count, 1))
+    )
 
     candidates: List[CandidateClip] = []
     current_start = transcript[0]["start"]

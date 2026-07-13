@@ -1,13 +1,12 @@
 """
 gemini_transcription_service.py
-Transcribes audio using Google Gemini via google-generativeai library.
+Transcribes audio using Google Gemini via google-genai library.
+Sends audio bytes directly — no file upload API needed.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import time
 from typing import List
 
 from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
@@ -19,47 +18,26 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set.")
 
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    genai.configure(api_key=GEMINI_API_KEY)
-
-    if logger:
-        logger.info(f"Uploading audio to Gemini: {audio_path}")
-
-    # Upload the audio file
-    audio_file = genai.upload_file(
-        path=audio_path,
-        mime_type="audio/wav",
-    )
-
-    # Wait for file to be processed
-    if logger:
-        logger.info("Waiting for Gemini to process audio file...")
-
-    max_wait = 120
-    waited = 0
-    while audio_file.state.name == "PROCESSING":
-        if waited >= max_wait:
-            raise TimeoutError("Gemini file processing timed out after 120s")
-        time.sleep(3)
-        waited += 3
-        audio_file = genai.get_file(audio_file.name)
-
-    if audio_file.state.name != "ACTIVE":
-        raise RuntimeError(f"Gemini file processing failed: {audio_file.state.name}")
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     if logger:
-        logger.info("Audio processed, requesting transcription")
+        logger.info(f"Reading audio file: {audio_path}")
 
-    model = genai.GenerativeModel(model_name=GEMINI_MODEL)
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read()
 
-    prompt = """
-Transcribe this audio completely and accurately.
+    if logger:
+        logger.info(f"Sending {len(audio_bytes)} bytes to Gemini for transcription")
+
+    prompt = """Transcribe this audio completely and accurately.
 
 Break into natural segments of one sentence each.
 For each segment estimate start and end time in seconds.
 
-Return ONLY valid JSON, no markdown backticks, in this exact format:
+Return ONLY valid JSON, no markdown backticks, no extra text, in this exact format:
 {
   "segments": [
     {"start": 0.0, "end": 3.2, "text": "exact spoken words here"}
@@ -67,15 +45,24 @@ Return ONLY valid JSON, no markdown backticks, in this exact format:
 }
 
 Cover the entire audio from start to finish.
-"""
+If there is silence or no speech, skip those parts."""
 
-    response = model.generate_content([audio_file, prompt])
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[
+            types.Part.from_bytes(
+                data=audio_bytes,
+                mime_type="audio/wav",
+            ),
+            types.Part.from_text(text=prompt),
+        ],
+    )
 
     text = (response.text or "").strip()
     text = text.replace("```json", "").replace("```", "").strip()
 
     if logger:
-        logger.debug(f"Gemini response preview: {text[:200]}")
+        logger.debug(f"Gemini response preview: {text[:300]}")
 
     try:
         result = json.loads(text)
@@ -85,6 +72,7 @@ Cover the entire audio from start to finish.
         raise RuntimeError(f"Gemini returned invalid JSON: {exc}") from exc
 
     raw_segments = result.get("segments", [])
+
     if not raw_segments:
         if logger:
             logger.warn("Gemini returned zero segments")
@@ -111,18 +99,17 @@ Cover the entire audio from start to finish.
 
     if logger:
         total_words = sum(len(s["words"]) for s in transcript)
-        logger.info(f"Transcription complete: {len(transcript)} segments, {total_words} words")
-
-    # Clean up uploaded file to save storage
-    try:
-        genai.delete_file(audio_file.name)
-    except Exception:
-        pass
+        logger.info(
+            f"Transcription complete: {len(transcript)} segments, "
+            f"{total_words} words"
+        )
 
     return transcript
 
 
-def _synthesize_word_timestamps(text: str, start: float, end: float) -> List[WordTimestamp]:
+def _synthesize_word_timestamps(
+    text: str, start: float, end: float
+) -> List[WordTimestamp]:
     words = text.split()
     if not words:
         return []
