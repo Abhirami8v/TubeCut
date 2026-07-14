@@ -62,8 +62,8 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-TRANSCRIPTION_ENGINE = os.getenv("TRANSCRIPTION_ENGINE", "groq").lower()
+
+TRANSCRIPTION_ENGINE = os.getenv("TRANSCRIPTION_ENGINE", "gemini").lower()
 YOUTUBE_DATA_API_KEY = os.getenv("YOUTUBE_DATA_API_KEY", "")
 PROXY_URL = os.getenv("PROXY_URL", "")
 # yt-dlp configurations to bypass cloud host IP blocking

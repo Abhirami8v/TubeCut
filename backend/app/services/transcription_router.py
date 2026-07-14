@@ -20,15 +20,15 @@ def transcribe(audio_path: str, logger: JobLogger | None = None) -> List[Transcr
         return transcription_service.transcribe_audio(audio_path, logger=logger)
 
     if logger:
-        logger.info("Transcription engine: Groq")
+        logger.info("Transcription engine: Gemini")
 
     try:
-        from app.services import groq_transcription_service
-        return groq_transcription_service.transcribe_audio(audio_path, logger=logger)
+        from app.services import gemini_transcription_service
+        return gemini_transcription_service.transcribe_audio(audio_path, logger=logger)
     except Exception as exc:
         if logger:
-            logger.error(f"Groq transcription failed: {exc}")
+            logger.error(f"gemini transcription failed: {exc}")
         # Do not fall back to Whisper on cloud hosts as it triggers OOM restarts
         raise RuntimeError(
-            f"Groq transcription failed: {exc}. Please verify that your GROQ_API_KEY environment variable is valid."
+            f"gemini transcription failed: {exc}. Please verify that your GEMINI_API_KEY environment variable is valid."
         )

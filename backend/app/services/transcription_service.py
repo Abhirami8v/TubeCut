@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import List
 
 from app.core.logging_utils import JobLogger
-from app.services.groq_transcription_service import transcribe_audio
+from app.services.gemini_transcription_service import transcribe_audio
 from app.services.transcript_utils import (
     TranscriptSegment,
     WordTimestamp,

@@ -1,114 +1,98 @@
 """
-groq_transcription_service.py
-Transcribes audio using Groq Whisper API (whisper-large-v3-turbo)
-via the official groq Python SDK with real word-level timestamps.
+gemini_transcription_service.py
+Transcribes audio using Google Gemini via google-genai library.
+Sends audio bytes directly — no file upload API needed.
 """
 
 from __future__ import annotations
 
-import os
+import json
 from typing import List
 
-from app.core.config import GROQ_API_KEY
+from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
 from app.core.logging_utils import JobLogger
 from app.services.transcript_utils import TranscriptSegment, WordTimestamp
 
 
 def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[TranscriptSegment]:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not set.")
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set.")
 
-    import httpx
-    from groq import Groq
+    from google import genai
+    from google.genai import types
 
-    # Pass an explicit httpx.Client to avoid proxy env var conflicts
-    # in cloud deployment environments (Render, Railway, etc.)
-    client = Groq(
-        api_key=GROQ_API_KEY,
-        http_client=httpx.Client(),
-    )
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     if logger:
         logger.info(f"Reading audio file: {audio_path}")
 
-    file_size = os.path.getsize(audio_path)
-    if logger:
-        logger.info(f"Audio file size: {file_size} bytes")
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read()
 
-    # Groq's API accepts the file directly. We open the file and pass the stream.
-    with open(audio_path, "rb") as audio_file:
+    if logger:
+        logger.info(f"Sending {len(audio_bytes)} bytes to Gemini for transcription")
+
+    prompt = """Transcribe this audio completely and accurately.
+
+Break into natural segments of one sentence each.
+For each segment estimate start and end time in seconds.
+
+Return ONLY valid JSON, no markdown backticks, no extra text, in this exact format:
+{
+  "segments": [
+    {"start": 0.0, "end": 3.2, "text": "exact spoken words here"}
+  ]
+}
+
+Cover the entire audio from start to finish.
+If there is silence or no speech, skip those parts."""
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[
+            types.Part.from_bytes(
+                data=audio_bytes,
+                mime_type="audio/wav",
+            ),
+            types.Part.from_text(text=prompt),
+        ],
+    )
+
+    text = (response.text or "").strip()
+    text = text.replace("```json", "").replace("```", "").strip()
+
+    if logger:
+        logger.debug(f"Gemini response preview: {text[:300]}")
+
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as exc:
         if logger:
-            logger.info("Sending audio to Groq Whisper API for transcription")
+            logger.error(f"Failed to parse Gemini JSON: {text[:500]}")
+        raise RuntimeError(f"Gemini returned invalid JSON: {exc}") from exc
 
-        try:
-            transcription = client.audio.transcriptions.create(
-                file=("audio.mp3", audio_file, "audio/mpeg"),
-                model="whisper-large-v3-turbo",
-                response_format="verbose_json",
-                timestamp_granularities=["word"],
-            )
-        except Exception as exc:
-            if logger:
-                logger.error(f"Groq API call failed: {exc}")
-            raise RuntimeError(
-                f"Groq Whisper transcription failed: {exc}. Please verify that your GROQ_API_KEY is valid."
-            ) from exc
-
-    if logger:
-        logger.debug(f"Groq response received, type: {type(transcription).__name__}")
-
-    # Convert the Pydantic model to a dict to reliably access all fields
-    data = transcription.model_dump()
-
-    raw_segments = data.get("segments") or []
-    raw_words = data.get("words") or []
-
-    # Build a word map: for each word, we have {word, start, end}
-    word_list: List[WordTimestamp] = []
-    for w in raw_words:
-        word_text = (w.get("word") or "").strip()
-        if not word_text:
-            continue
-        word_start = float(w.get("start", 0.0))
-        word_end = float(w.get("end", word_start + 0.1))
-        if word_end <= word_start:
-            word_end = word_start + 0.1
-        word_list.append({
-            "word": word_text,
-            "start": round(word_start, 2),
-            "end": round(word_end, 2),
-        })
+    raw_segments = result.get("segments", [])
 
     if not raw_segments:
         if logger:
-            logger.warn("Groq returned zero segments")
+            logger.warn("Gemini returned zero segments")
         return []
 
     transcript: List[TranscriptSegment] = []
     for seg in raw_segments:
-        seg_start = float(seg.get("start", 0.0))
-        seg_end = float(seg.get("end", seg_start + 1.0))
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", start + 1.0))
         seg_text = (seg.get("text") or "").strip()
-        if seg_end <= seg_start:
-            seg_end = seg_start + 0.5
+        if end <= start:
+            end = start + 0.5
         if not seg_text:
             continue
-
-        # Filter words that belong to this segment based on time range
-        seg_words = [
-            w for w in word_list
-            if seg_start - 0.05 <= w["start"] <= seg_end + 0.05
-        ]
-
-        # If no words matched (edge case), fall back to synthesizing
-        if not seg_words:
-            seg_words = _synthesize_word_timestamps(seg_text, seg_start, seg_end)
-
+        words = _synthesize_word_timestamps(seg_text, start, end)
         transcript.append({
-            "start": round(seg_start, 2),
-            "end": round(seg_end, 2),
+            "start": round(start, 2),
+            "end": round(end, 2),
             "text": seg_text,
-            "words": seg_words,
+            "words": words,
         })
 
     transcript.sort(key=lambda s: s["start"])
@@ -126,7 +110,6 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
 def _synthesize_word_timestamps(
     text: str, start: float, end: float
 ) -> List[WordTimestamp]:
-    """Fallback: evenly distribute word timestamps when real ones are unavailable."""
     words = text.split()
     if not words:
         return []
