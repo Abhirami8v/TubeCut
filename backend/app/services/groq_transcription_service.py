@@ -42,7 +42,7 @@ def transcribe_audio(audio_path: str, logger: JobLogger | None = None) -> List[T
 
         try:
             transcription = client.audio.transcriptions.create(
-                file=audio_file,
+                file=("audio.mp3", audio_file, "audio/mpeg"),
                 model="whisper-large-v3-turbo",
                 response_format="verbose_json",
                 timestamp_granularities=["word"],
