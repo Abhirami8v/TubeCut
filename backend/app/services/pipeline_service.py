@@ -27,7 +27,7 @@ from app.services import (
     caption_burn_service,
     caption_service,
     clip_service,
-    gemini_service,
+    groq_service,
     hook_score_service,
     reframe_service,
     style_service,
@@ -126,7 +126,7 @@ def _run_pipeline_inner(
 
     # --- Step 4: AI analysis / segmentation -----------------------------
     _update_job(db, job, status=JobStatus.ANALYZING, progress=50, label="Analyzing transcript for clip-worthy moments")
-    candidates = gemini_service.analyze_transcript(transcript, target_clip_count or TARGET_CLIP_COUNT)
+    candidates = groq_service.analyze_transcript(transcript, target_clip_count or TARGET_CLIP_COUNT)
     gc.collect()
 
     # --- Step 5: build Clip rows with hook scores -------------------------
