@@ -235,7 +235,8 @@ def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
     from pytubefix import YouTube
     from pytubefix.cli import on_progress
     from app.core.config import PROXY_URL
-
+    import yt_dlp
+    from app.core.config import COOKIES_FILE, YT_DLP_PROXY
     if logger:
         logger.info(f"Downloading via pytubefix: {url}")
 
