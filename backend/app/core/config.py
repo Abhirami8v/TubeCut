@@ -69,7 +69,7 @@ PROXY_URL = os.getenv("PROXY_URL", "")
 # yt-dlp configurations to bypass cloud host IP blocking
 YT_DLP_COOKIES_CONTENT = os.getenv("YT_DLP_COOKIES_CONTENT", "")
 YT_DLP_COOKIES_PATH = os.getenv("YT_DLP_COOKIES_PATH", "")
-YT_DLP_PROXY = os.getenv("YT_DLP_PROXY", "")
+YT_DLP_PROXY = os.getenv("YT_DLP_PROXY", "") or os.getenv("PROXY_URL", "")
 YT_DLP_PO_TOKEN = os.getenv("YT_DLP_PO_TOKEN", "")
 
 COOKIES_FILE = None
