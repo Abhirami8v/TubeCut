@@ -32,14 +32,16 @@ def analyze_transcript(transcript: List[dict], target_clip_count: int | None = N
 
 
 def _analyze_with_gemini(transcript: List[dict], count: int) -> List[CandidateClip]:
-    from google import genai
+    import httpx
+    import os
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    api_key = os.getenv("OPENROUTER_API_KEY", "") or GEMINI_API_KEY
+    if not api_key:
+        raise RuntimeError("No API key set")
 
     transcript_json = json.dumps(transcript, indent=2)
 
-    prompt = f"""
-You are a world-class short-form video editor identifying viral moments.
+    prompt = f"""You are a world-class short-form video editor identifying viral moments.
 
 Analyze this transcript and identify the {count} MOST compelling moments
 that would work as standalone short-form clips.
@@ -56,46 +58,68 @@ Rules:
 - Each clip must be between {MIN_CLIP_SECONDS} and {MAX_CLIP_SECONDS} seconds
 - No overlapping time ranges
 
-Return ONLY valid JSON, no markdown backticks, in this exact format:
+Return ONLY valid JSON, no markdown, in this exact format:
 {{
   "clips": [
     {{
-      "start_time": 0,
-      "end_time": 30,
+      "start_time": 0.0,
+      "end_time": 30.0,
       "confidence_score": 92,
-      "reason": "Why this works as a standalone clip",
+      "reason": "Why this works as a viral clip",
       "title": "Short punchy title"
     }}
   ]
 }}
 
 Transcript:
-{transcript_json}
-"""
+{transcript_json}"""
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-    )
+    # Use OpenRouter if key available, else fall back to direct Gemini
+    if os.getenv("OPENROUTER_API_KEY"):
+        response = httpx.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                "Content-Type":  "application/json",
+                "HTTP-Referer":  "https://tubecut.app",
+                "X-Title":       "TubeCut",
+            },
+            json={
+                "model":    f"google/{GEMINI_MODEL}",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+            },
+            timeout=60.0,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"OpenRouter error {response.status_code}: {response.text}")
+        text = response.json()["choices"][0]["message"]["content"].strip()
+    else:
+        from google import genai
+        client   = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        text     = (response.text or "").strip()
 
-    text = (response.text or "").strip()
-    text = text.replace("```json", "").replace("```", "").strip()
-
+    text   = text.replace("```json", "").replace("```", "").strip()
     result = json.loads(text)
-    clips = result.get("clips", [])
+    clips  = result.get("clips", [])
+
+    if not clips:
+        raise ValueError("Gemini returned zero clips")
 
     candidates: List[CandidateClip] = []
     for clip in clips:
+        start = float(clip.get("start_time", 0))
+        end   = float(clip.get("end_time",   0))
+        if end <= start:
+            continue
         candidates.append({
-            "start_time": float(clip.get("start_time", 0)),
-            "end_time": float(clip.get("end_time", 0)),
+            "start_time":       start,
+            "end_time":         end,
             "confidence_score": float(clip.get("confidence_score", 70)),
-            "reason": clip.get("reason", ""),
-            "title": clip.get("title", "Untitled Clip"),
+            "reason":           clip.get("reason", ""),
+            "title":            clip.get("title",  "Untitled Clip"),
         })
-
-    if not candidates:
-        raise ValueError("Gemini returned zero clips")
 
     return candidates
 
