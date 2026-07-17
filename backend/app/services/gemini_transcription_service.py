@@ -55,7 +55,7 @@ Rules:
 - Timestamps must increase monotonically"""
 
     payload = {
-        "model": f"google/{GEMINI_MODEL}",
+        "model": "google/gemini-2.0-flash-001",
         "messages": [
             {
                 "role": "user",

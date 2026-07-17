@@ -85,7 +85,7 @@ Transcript:
                 "X-Title":       "TubeCut",
             },
             json={
-                "model":    f"google/{GEMINI_MODEL}",
+                "model": "google/gemini-2.0-flash-001",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
             },
