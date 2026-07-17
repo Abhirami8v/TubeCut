@@ -1,3 +1,42 @@
+"""
+video_service.py
+Downloads YouTube videos using pytubefix.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import TypedDict
+
+from pytubefix import YouTube
+
+from app.core.config import DOWNLOADS_DIR
+from app.core.logging_utils import JobLogger
+from app.services.ffmpeg_utils import run_ffmpeg
+
+
+class DownloadResult(TypedDict):
+    video_id: str
+    title: str
+    file_path: str
+    duration: float
+
+
+def _extract_video_id(url: str) -> str:
+    patterns = [
+        r"(?:v=|youtu\.be/|shorts/|embed/)([^&?/]+)"
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+
+    raise ValueError(f"Invalid YouTube URL: {url}")
+
+
 def download_video(url: str, logger: JobLogger | None = None) -> DownloadResult:
     from pytubefix import YouTube
     from pytubefix.cli import on_progress
@@ -102,3 +141,80 @@ def _download_with_ytdlp(url: str, logger: JobLogger | None = None) -> DownloadR
         "file_path": file_path,
         "duration": float(info.get("duration") or 0.0),
     }
+
+
+def probe_duration(file_path: str, logger: JobLogger | None = None) -> float:
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        file_path,
+    ]
+
+    stdout = run_ffmpeg(command, logger=logger, label="probe_duration")
+    data = json.loads(stdout)
+
+    return float(data.get("format", {}).get("duration", 0))
+
+
+def probe_dimensions(file_path: str, logger: JobLogger | None = None):
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "json",
+        file_path,
+    ]
+
+    stdout = run_ffmpeg(command, logger=logger, label="probe_dimensions")
+    data = json.loads(stdout)
+
+    streams = data.get("streams", [])
+
+    if not streams:
+        return (0, 0)
+
+    return (
+        int(streams[0]["width"]),
+        int(streams[0]["height"]),
+    )
+
+
+def probe_fps(file_path: str, logger: JobLogger | None = None):
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=r_frame_rate",
+        "-of",
+        "json",
+        file_path,
+    ]
+
+    stdout = run_ffmpeg(command, logger=logger, label="probe_fps")
+    data = json.loads(stdout)
+
+    streams = data.get("streams", [])
+
+    if not streams:
+        return 30.0
+
+    rate = streams[0]["r_frame_rate"]
+
+    try:
+        num, den = rate.split("/")
+        return float(num) / float(den)
+    except Exception:
+        return 30.0
