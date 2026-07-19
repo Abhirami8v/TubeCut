@@ -1,5 +1,6 @@
 """
-transcription_router.py — Gemini only.
+transcription_router.py
+AssemblyAI for transcription, Groq for analysis.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from app.services.transcript_utils import TranscriptSegment
 
 def transcribe(audio_path: str, logger: JobLogger | None = None) -> List[TranscriptSegment]:
     if logger:
-        logger.info("Transcription engine: Gemini")
+        logger.info("Transcription engine: AssemblyAI")
 
-    from app.services import gemini_transcription_service
-    return gemini_transcription_service.transcribe_audio(audio_path, logger=logger)
+    from app.services import assemblyai_transcription_service
+    return assemblyai_transcription_service.transcribe_audio(audio_path, logger=logger)
