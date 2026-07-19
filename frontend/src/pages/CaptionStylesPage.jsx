@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Copy, Trash2, X } from 'lucide-react'
+import { Plus, Copy, Trash2, X, Palette } from 'lucide-react'
 import { api } from '../lib/api'
 import StylePreviewCard from '../components/styles/StylePreviewCard'
 import StyleEditorPanel from '../components/styles/StyleEditorPanel'
@@ -84,55 +84,79 @@ export default function CaptionStylesPage() {
   }
 
   return (
-    <div className="px-10 py-10 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="font-display font-semibold text-2xl">Caption Styles</h1>
-        <Button onClick={startNew} size="sm">
-          <Plus size={14} /> New style
+    <div className="px-6 md:px-12 py-12 max-w-6xl mx-auto min-h-screen relative">
+      {/* Header Panel */}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-10 pb-6 border-b border-[#2A2633]">
+        <div>
+          <span className="text-[10px] font-mono tracking-widest text-[#C45EFF] uppercase font-bold">
+            Typography Assets
+          </span>
+          <h1 className="font-display font-extrabold text-3xl md:text-4xl text-white tracking-tight mt-1">
+            Caption Styles
+          </h1>
+          <p className="text-sm text-[var(--color-text-dim)] mt-2">
+            Customize typography presets to burn text overlays onto your short-form videos.
+          </p>
+        </div>
+        
+        <Button 
+          onClick={startNew} 
+          size="sm"
+          className="rounded-xl bg-gradient-to-tr from-[#C45EFF] to-[#D88EFF] text-white hover:opacity-90 font-semibold px-5 py-2.5 shadow-[0_4px_12px_rgba(196,94,255,0.2)] flex items-center justify-center gap-2"
+        >
+          <Plus size={15} strokeWidth={2.5} /> Create style
         </Button>
       </div>
-      <p className="text-sm text-[var(--color-text-dim)] mb-8">
-        Built-in presets plus anything you've customized. Applied per-clip from the clip editor.
-      </p>
 
-      {error && <p className="text-sm text-[var(--color-danger)] mb-4">{error}</p>}
+      {error && (
+        <p className="text-sm text-[#FF5A79] bg-[#FF5A79]/5 border border-[#FF5A79]/10 rounded-xl py-3 px-4 mb-6">{error}</p>
+      )}
 
+      {/* Styles Grid */}
       {styles && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
           {styles.map((style) => (
             <StylePreviewCard
               key={style.id}
               style={style}
               onClick={() => startEdit(style)}
               actions={
-                <>
-                  <IconAction title="Duplicate" onClick={(e) => { e.stopPropagation(); startDuplicate(style) }}>
-                    <Copy size={12} />
+                <div className="flex items-center gap-1.5">
+                  <IconAction title="Duplicate Style" onClick={(e) => { e.stopPropagation(); startDuplicate(style) }}>
+                    <Copy size={11} />
                   </IconAction>
                   {!style.is_preset && (
-                    <IconAction title="Delete" onClick={(e) => { e.stopPropagation(); handleDelete(style) }}>
-                      <Trash2 size={12} />
+                    <IconAction title="Delete Style" onClick={(e) => { e.stopPropagation(); handleDelete(style) }}>
+                      <Trash2 size={11} className="hover:text-[#FF5A79]" />
                     </IconAction>
                   )}
-                </>
+                </div>
               }
             />
           ))}
         </div>
       )}
 
+      {/* Editor Modal Overlay (Widen from max-w-3xl to max-w-5xl) */}
       {editing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
-          <div className="glass w-full max-w-3xl max-h-[88vh] overflow-y-auto rounded-2xl p-6 relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 sm:p-6 overflow-y-auto">
+          <div className="w-full max-w-5xl max-h-[90vh] overflow-y-auto rounded-3xl p-8 relative bg-[#0D0C0F] border border-[#2A2633] shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
             <button
               onClick={() => setEditing(null)}
-              className="absolute top-4 right-4 text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              className="absolute top-5 right-5 w-8 h-8 rounded-full border border-[#2A2633] bg-[#141318] text-[var(--color-text-dim)] hover:text-white flex items-center justify-center hover:border-white/20 transition-all"
             >
-              <X size={18} />
+              <X size={15} />
             </button>
-            <h2 className="font-display font-semibold text-lg mb-6">
-              {isNew ? 'New caption style' : `Edit "${editing.name}"`}
-            </h2>
+            
+            <div className="mb-8">
+              <span className="text-[10px] font-mono tracking-widest text-[#C45EFF] uppercase font-bold">
+                Style Designer
+              </span>
+              <h2 className="font-display font-extrabold text-2xl text-white tracking-tight mt-1">
+                {isNew ? 'Create Caption Preset' : `Customize "${editing.name}"`}
+              </h2>
+            </div>
+            
             <StyleEditorPanel
               style={editing}
               onChange={setEditing}
@@ -149,7 +173,7 @@ export default function CaptionStylesPage() {
 function IconAction({ children, ...props }) {
   return (
     <button
-      className="w-6 h-6 rounded-md bg-black/70 backdrop-blur text-white flex items-center justify-center hover:bg-black/90"
+      className="w-6 h-6 rounded-lg bg-black/80 backdrop-blur text-white flex items-center justify-center hover:bg-black border border-white/10 hover:border-white/30 transition-all cursor-pointer"
       {...props}
     >
       {children}

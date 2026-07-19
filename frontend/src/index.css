@@ -1,33 +1,33 @@
 
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Syne:wght@400..800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-display: "Space Grotesk", sans-serif;
-  --font-sans: "Inter", sans-serif;
+  --font-display: "Syne", sans-serif;
+  --font-sans: "DM Sans", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
 
-  --color-bg: #0B0D10;
-  --color-surface: #14171C;
-  --color-surface-2: #1C2027;
-  --color-surface-3: #242932;
-  --color-border: #2A2F38;
-  --color-border-soft: #20242C;
-  --color-text: #ECEEF1;
-  --color-text-dim: #8A8F99;
-  --color-text-faint: #565C68;
+  --color-bg: #0D0C0F;
+  --color-surface: #141318;
+  --color-surface-2: #1E1C22;
+  --color-surface-3: #2A2730;
+  --color-border: #2A2633;
+  --color-border-soft: #1E1B24;
+  --color-text: #F4F3F6;
+  --color-text-dim: #9F9AA8;
+  --color-text-faint: #605B6E;
 
-  --color-accent: #6C5CE7;
-  --color-accent-soft: #6C5CE71A;
-  --color-accent-hover: #7C6CF5;
+  --color-accent: #C45EFF;
+  --color-accent-soft: #C45EFF15;
+  --color-accent-hover: #D88EFF;
 
-  --color-heat-low: #4A5568;
-  --color-heat-mid: #F0A93C;
-  --color-heat-high: #FF5555;
+  --color-heat-low: #3E3B46;
+  --color-heat-mid: #FFB340;
+  --color-heat-high: #FF5A79;
 
-  --color-success: #3FD68F;
-  --color-danger: #FF5C5C;
+  --color-success: #35D0BA;
+  --color-danger: #FF5A79;
 }
 
 html, body {

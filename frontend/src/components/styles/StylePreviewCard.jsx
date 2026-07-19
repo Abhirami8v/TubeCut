@@ -1,9 +1,8 @@
 /**
  * StylePreviewCard
  *
- * Renders a small mock video frame styled with the given CaptionStyle
- * so users can compare presets visually before applying one, without
- * needing a real rendered clip.
+ * Renders a mock video frame styled with the CaptionStyle
+ * so users can compare presets visually.
  */
 export default function StylePreviewCard({ style, selected, onClick, actions }) {
   const textTransform = style.uppercase ? 'uppercase' : 'none'
@@ -13,31 +12,32 @@ export default function StylePreviewCard({ style, selected, onClick, actions }) 
   return (
     <div
       onClick={onClick}
-      className={`group relative rounded-xl overflow-hidden border cursor-pointer transition-all duration-150 ${
+      className={`group relative rounded-2xl overflow-hidden border cursor-pointer transition-all duration-300 ${
         selected
-          ? 'border-[var(--color-accent)] ring-1 ring-[var(--color-accent)]'
-          : 'border-[var(--color-border)] hover:border-[var(--color-text-faint)]'
+          ? 'border-[#C45EFF] shadow-[0_0_20px_rgba(196,94,255,0.25)] ring-1 ring-[#C45EFF]/40'
+          : 'border-[#2A2633] hover:border-[#C45EFF]/30 hover:shadow-[0_8px_24px_rgba(0,0,0,0.5)]'
       }`}
     >
+      {/* 9:16 Mock Phone Screen */}
       <div
-        className="aspect-[9/16] flex flex-col p-4 relative"
-        style={{
-          justifyContent: justify,
-          background:
-            'linear-gradient(160deg, #2a2438 0%, #1a1d24 45%, #14171c 100%)',
-        }}
+        className="aspect-[9/16] flex flex-col p-4 relative overflow-hidden bg-gradient-to-b from-[#1F1C24] via-[#141318] to-[#0D0C0F]"
+        style={{ justifyContent: justify }}
       >
+        {/* Mock phone notch/speaker bezel */}
+        <div className="absolute top-2.5 left-1/2 -translate-x-1/2 w-12 h-1 rounded-full bg-[#2A2633] opacity-60 pointer-events-none" />
+        
+        {/* Dynamic Preview Text */}
         <span
-          className="self-center text-center leading-tight px-2 py-1 rounded"
+          className="self-center text-center leading-tight px-3 py-1.5 rounded-xl select-none"
           style={{
             fontFamily: style.font_family,
-            fontSize: Math.min(style.font_size, 30),
+            fontSize: Math.min(style.font_size, 26),
             color: style.text_color,
             textTransform,
             fontWeight,
-            WebkitTextStroke: style.outline_width ? `${Math.min(style.outline_width, 3) / 2}px ${style.outline_color}` : undefined,
+            WebkitTextStroke: style.outline_width ? `${Math.min(style.outline_width, 3) / 1.8}px ${style.outline_color}` : undefined,
             textShadow: style.shadow_strength
-              ? `0 ${style.shadow_strength}px ${style.shadow_strength * 2}px rgba(0,0,0,0.6)`
+              ? `0 ${style.shadow_strength * 1.5}px ${style.shadow_strength * 3}px rgba(0,0,0,0.8)`
               : undefined,
             background: style.background_box
               ? `${style.outline_color}${Math.round((style.background_opacity / 100) * 255)
@@ -54,13 +54,15 @@ export default function StylePreviewCard({ style, selected, onClick, actions }) 
         </span>
       </div>
 
-      <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* Floating Actions */}
+      <div className="absolute top-3 right-3 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-20">
         {actions}
       </div>
 
-      <div className="px-3 py-2.5 bg-[var(--color-surface)] border-t border-[var(--color-border)]">
-        <p className="text-xs font-medium truncate">{style.name}</p>
-        <p className="text-[10px] text-[var(--color-text-faint)] font-mono mt-0.5">
+      {/* Footer Details */}
+      <div className="p-4 bg-[#141318] border-t border-[#2A2633]">
+        <p className="text-xs font-bold text-white truncate">{style.name}</p>
+        <p className="text-[10px] text-[var(--color-text-dim)] font-mono mt-1">
           {style.font_family} · {style.font_size}px · {style.animation}
         </p>
       </div>
