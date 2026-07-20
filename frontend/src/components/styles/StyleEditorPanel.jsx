@@ -2,6 +2,7 @@ import Button from '../ui/Button'
 import StylePreviewCard from './StylePreviewCard'
 
 const FONT_OPTIONS = [
+  'Bowlby One SC', 'KOMIKAX', 'Unbounded', 'Yuyu', 'Inter Local',
   'Inter', 'Arial', 'Arial Black', 'Arial Rounded MT Bold', 'Avenir Next',
   'Calibri', 'Comic Sans MS', 'Georgia', 'Helvetica Neue', 'Impact',
   'Montserrat', 'Poppins', 'Segoe UI', 'Space Grotesk', 'Tahoma',
@@ -83,10 +84,11 @@ export default function StyleEditorPanel({ style, onChange, onSave, saving }) {
         {/* Color Palette */}
         <div className="space-y-4">
           <h3 className="font-display font-bold text-lg text-white border-b border-[#2A2633] pb-2">Color Palette</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <ColorField label="Text Color" value={style.text_color} onChange={set('text_color')} />
             <ColorField label="Highlight Color" value={style.highlight_color} onChange={set('highlight_color')} />
             <ColorField label="Outline Color" value={style.outline_color} onChange={set('outline_color')} />
+            <ColorField label="Background Color" value={style.background_color || '#000000'} onChange={set('background_color')} />
           </div>
         </div>
 
@@ -124,7 +126,7 @@ export default function StyleEditorPanel({ style, onChange, onSave, saving }) {
         {/* Position & Animations */}
         <div className="space-y-4">
           <h3 className="font-display font-bold text-lg text-white border-b border-[#2A2633] pb-2">Layout & Motion</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
             <Field label="Layout Position">
               <select 
                 value={style.position} 
@@ -147,6 +149,19 @@ export default function StyleEditorPanel({ style, onChange, onSave, saving }) {
                   <option key={a} value={a}>{a}</option>
                 ))}
               </select>
+            </Field>
+
+            <Field label={`Safe Margins: ${style.safe_margins ?? 60}px`}>
+              <div className="flex items-center gap-3 h-11">
+                <input
+                  type="range"
+                  min={0}
+                  max={200}
+                  value={style.safe_margins ?? 60}
+                  onChange={setNum('safe_margins')}
+                  className="flex-1 accent-[#C45EFF] cursor-pointer"
+                />
+              </div>
             </Field>
           </div>
         </div>

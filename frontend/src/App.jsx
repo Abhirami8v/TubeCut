@@ -6,6 +6,7 @@ import MyClipsPage from './pages/MyClipsPage'
 import CaptionStylesPage from './pages/CaptionStylesPage'
 import SettingsPage from './pages/SettingsPage'
 import ClipEditorPage from './pages/ClipEditorPage'
+import AdminPage from './pages/AdminPage'
 import LoginPage from './pages/LoginPage'
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/clips/:clipId" element={<ClipEditorPage />} />
         <Route path="/styles" element={<CaptionStylesPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/admin" element={<AdminPage />} />
       </Routes>
     </AppShell>
   )

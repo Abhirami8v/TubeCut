@@ -288,10 +288,18 @@ def _render_caption_canvas(
         padding_x = max(12, font.size // 2)
         padding_y = max(8, font.size // 4)
         x0 = (video_width - widest) / 2 - padding_x
+
+        bg_hex = style.get("background_color", "#000000").lstrip("#")
+        if len(bg_hex) != 6:
+            bg_hex = "000000"
+        bg_r = int(bg_hex[0:2], 16)
+        bg_g = int(bg_hex[2:4], 16)
+        bg_b = int(bg_hex[4:6], 16)
+
         draw.rounded_rectangle(
             (x0, base_y - padding_y, x0 + widest + 2 * padding_x, base_y + total_height + padding_y),
             radius=max(8, font.size // 4),
-            fill=(0, 0, 0, alpha),
+            fill=(bg_r, bg_g, bg_b, alpha),
         )
 
     for line_number, (line, width) in enumerate(measured_lines):

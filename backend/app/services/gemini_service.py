@@ -7,7 +7,8 @@ import json
 import os
 from typing import List, TypedDict
 
-from app.core.config import MAX_CLIP_SECONDS, MIN_CLIP_SECONDS, TARGET_CLIP_COUNT
+from app.core.config import TARGET_CLIP_COUNT
+from app.services.transcript_utils import text_in_range
 
 
 class CandidateClip(TypedDict):
@@ -16,6 +17,29 @@ class CandidateClip(TypedDict):
     confidence_score: float
     reason: str
     title: str
+
+
+def get_target_duration(source_duration: float) -> float:
+    """
+    Scale clip lengths proportionally based on the source video duration.
+    - Max clip duration: 60 seconds
+    - Min clip duration: 15 seconds
+    - Prefer clips between 30-60 seconds whenever possible
+    - If source is 30s, generate approximately 15s clips
+    - Never generate clips longer than the source video
+    """
+    if source_duration <= 15.0:
+        return source_duration
+    elif source_duration <= 30.0:
+        return max(15.0, source_duration / 2.0)
+    elif source_duration <= 60.0:
+        # Scale between 15s and 30s
+        return 15.0 + (source_duration - 30.0) * (15.0 / 30.0)
+    elif source_duration <= 120.0:
+        # Scale between 30s and 60s
+        return 30.0 + (source_duration - 60.0) * (30.0 / 60.0)
+    else:
+        return 60.0
 
 
 def analyze_transcript(
@@ -41,12 +65,14 @@ def _analyze_with_groq(transcript: List[dict], count: int) -> List[CandidateClip
         http_client=httpx.Client(),
     )
 
+    total_duration = transcript[-1]["end"]
+    target_len = get_target_duration(total_duration)
     transcript_json = json.dumps(transcript, indent=2)
 
     prompt = f"""You are a world-class short-form video editor identifying viral moments.
 
 Analyze this transcript and identify the {count} MOST compelling moments
-that would work as standalone short-form clips (YouTube Shorts, TikTok, Reels).
+that would work as standalone short-form clips optimized for YouTube Shorts engagement.
 
 Prioritize moments with:
 1. Strong opening hooks that grab attention in the first 3 seconds
@@ -54,12 +80,16 @@ Prioritize moments with:
 3. Emotional stories, shocking facts, or surprising revelations
 4. Clear payoff or conclusion within the clip
 5. Self-contained meaning without needing context
+6. Complete, meaningful segments (avoid cutting sentences in half or splitting mid-phrase).
 
 Rules:
-- Return EXACTLY {count} clips
-- Each clip must be between {MIN_CLIP_SECONDS} and {MAX_CLIP_SECONDS} seconds
-- No overlapping time ranges
-- Pick genuinely viral moments not just the beginning
+- Return EXACTLY {count} clips.
+- Each clip must be between 15.0 and 60.0 seconds (never exceed 60.0 seconds).
+- Proportional scaling: The source video duration is {total_duration:.1f}s. Scale clip durations proportionally.
+  * For this video, prefer clip lengths around {target_len:.1f} seconds.
+- Never generate clips longer than the source video ({total_duration:.1f}s).
+- No overlapping time ranges.
+- Pick genuinely viral moments.
 
 Return ONLY valid JSON, no markdown, in this exact format:
 {{
@@ -109,8 +139,8 @@ Transcript:
         if end <= start:
             continue
         candidates.append({
-            "start_time":       start,
-            "end_time":         end,
+            "start_time":       round(start, 2),
+            "end_time":         round(end, 2),
             "confidence_score": float(clip.get("confidence_score", 70)),
             "reason":           clip.get("reason", ""),
             "title":            clip.get("title",  "Untitled Clip"),
@@ -123,33 +153,99 @@ def _fallback_segmentation(transcript: List[dict], count: int) -> List[Candidate
     if not transcript:
         return []
 
-    total_duration  = transcript[-1]["end"]
-    target_duration = min(
-        MAX_CLIP_SECONDS,
-        max(MIN_CLIP_SECONDS, total_duration / max(count, 1))
-    )
+    total_duration = transcript[-1]["end"]
+    target_duration = get_target_duration(total_duration)
+
+    # Ensure min/max bounds
+    target_duration = max(15.0, min(60.0, target_duration))
+    if total_duration < 15.0:
+        target_duration = total_duration
 
     candidates: List[CandidateClip] = []
-    current_start  = transcript[0]["start"]
-    current_texts: List[str] = []
 
-    for i, segment in enumerate(transcript):
-        current_texts.append(segment["text"])
-        elapsed = segment["end"] - current_start
-        is_last = i == len(transcript) - 1
+    if count <= 1 or total_duration <= target_duration:
+        start_time = transcript[0]["start"]
+        end_time = transcript[-1]["end"]
+        # If it's too long, align to segments and cut at target_duration
+        if end_time - start_time > target_duration:
+            accumulated_end = start_time
+            for seg in transcript:
+                if seg["end"] - start_time <= target_duration:
+                    accumulated_end = seg["end"]
+                else:
+                    if accumulated_end - start_time < 15.0:
+                        accumulated_end = seg["end"]  # ensure minimum 15s if possible
+                    break
+            end_time = accumulated_end
 
-        if elapsed >= target_duration or is_last:
-            candidates.append({
-                "start_time":       round(current_start,  2),
-                "end_time":         round(segment["end"], 2),
-                "confidence_score": 60.0,
-                "reason":           "Auto-segmented based on duration.",
-                "title":            " ".join(current_texts)[:48].strip() or "Untitled Clip",
-            })
-            if len(candidates) >= count:
+        candidates.append({
+            "start_time":       round(start_time, 2),
+            "end_time":         round(end_time, 2),
+            "confidence_score": 75.0,
+            "reason":           "Auto-segmented based on optimal Shorts duration.",
+            "title":            "Shorts Highlight",
+        })
+        return candidates
+
+    # If count > 1, space them out evenly across the video
+    spacing = (total_duration - target_duration) / (count - 1)
+    for c in range(count):
+        target_start = c * spacing
+        # Find the segment closest to target_start
+        start_idx = 0
+        min_diff = float("inf")
+        for idx, seg in enumerate(transcript):
+            diff = abs(seg["start"] - target_start)
+            if diff < min_diff:
+                min_diff = diff
+                start_idx = idx
+
+        start_time = transcript[start_idx]["start"]
+        end_time = transcript[start_idx]["end"]
+
+        # Accumulate segments until we reach target_duration (without exceeding 60s)
+        for idx in range(start_idx, len(transcript)):
+            seg = transcript[idx]
+            current_len = seg["end"] - start_time
+            if current_len <= target_duration:
+                end_time = seg["end"]
+            else:
+                # If we exceed, check if we must stay below 60s
+                if current_len <= 60.0:
+                    end_time = seg["end"]
                 break
-            if i + 1 < len(transcript):
-                current_start = transcript[i + 1]["start"]
-            current_texts = []
 
-    return candidates[:count]
+        # Ensure it's at least 15 seconds by extending backward if necessary
+        if end_time - start_time < 15.0 and start_idx > 0:
+            for idx in range(start_idx - 1, -1, -1):
+                start_time = transcript[idx]["start"]
+                if end_time - start_time >= 15.0:
+                    break
+
+        # Strictly enforce maximum 60 seconds
+        if end_time - start_time > 60.0:
+            for idx in range(start_idx, len(transcript)):
+                if transcript[idx]["end"] - start_time <= 60.0:
+                    end_time = transcript[idx]["end"]
+                else:
+                    break
+
+        # Avoid duplicates
+        is_dup = False
+        for existing in candidates:
+            if abs(existing["start_time"] - start_time) < 2.0 and abs(existing["end_time"] - end_time) < 2.0:
+                is_dup = True
+                break
+
+        if not is_dup and end_time > start_time:
+            text = text_in_range(transcript, start_time, end_time)
+            title = text[:40].strip() + "..." if len(text) > 40 else text
+            candidates.append({
+                "start_time":       round(start_time, 2),
+                "end_time":         round(end_time, 2),
+                "confidence_score": 70.0,
+                "reason":           "Segmented for maximum engagement and clear sentence boundaries.",
+                "title":            title or f"Highlight part {c + 1}",
+            })
+
+    return candidates

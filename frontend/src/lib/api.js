@@ -16,8 +16,14 @@ export function downloadUrl(path) {
 }
 
 async function request(path, options = {}) {
+  const token = localStorage.getItem('tubecut_token')
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     ...options,
   })
 
@@ -37,6 +43,17 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  // Auth & Settings
+  login: (payload) => request('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  register: (payload) => request('/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
+  getMe: () => request('/auth/me'),
+  saveSettings: (payload) => request('/auth/settings', { method: 'POST', body: JSON.stringify(payload) }),
+
+  // Admin Panel
+  adminListUsers: () => request('/admin/users'),
+  adminDeleteUser: (userId) => request(`/admin/users/${userId}`, { method: 'DELETE' }),
+  adminToggleAdmin: (userId) => request(`/admin/users/${userId}/toggle-admin`, { method: 'POST' }),
+
   // Jobs
   generateClips: (payload) =>
     request('/generate-clips', { method: 'POST', body: JSON.stringify(payload) }),

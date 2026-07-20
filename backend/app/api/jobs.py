@@ -17,6 +17,8 @@ from app.models.job import Job, JobStatus
 from app.schemas.job import GenerateClipsRequest, GenerateClipsResponse, JobStatusResponse, JobStepStatus
 from app.services import pipeline_service, style_service
 from app.utils.file_urls import to_media_url
+from app.api.auth_deps import get_current_user
+from app.models.user import User
 
 router = APIRouter(tags=["jobs"])
 
@@ -36,6 +38,7 @@ STEP_LABELS = {
 def generate_clips(
     payload: GenerateClipsRequest,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not payload.url.strip():
@@ -43,7 +46,12 @@ def generate_clips(
 
     style_service.seed_preset_styles(db)
 
-    job = Job(source_url=payload.url, status=JobStatus.QUEUED, current_step_label="Queued")
+    job = Job(
+        source_url=payload.url,
+        status=JobStatus.QUEUED,
+        current_step_label="Queued",
+        user_id=current_user.id,
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -61,10 +69,17 @@ def generate_clips(
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
-def get_job_status(job_id: str, db: Session = Depends(get_db)):
+def get_job_status(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     job = db.query(Job).filter(Job.id == job_id).first()
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.user_id and job.user_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="You do not have permission to access this job.")
 
     steps = []
     current_index = Job.STEP_ORDER.index(job.status) if job.status in Job.STEP_ORDER else -1
@@ -81,11 +96,14 @@ def get_job_status(job_id: str, db: Session = Depends(get_db)):
 
     clips_payload = []
     if job.status == JobStatus.COMPLETED:
+        import time
+        timestamp = int(time.time())
         for clip in sorted(job.clips, key=lambda c: c.index_in_job):
             summary = clip.to_summary_dict()
-            summary["preview_url"] = to_media_url(clip.final_clip_path or clip.raw_clip_path)
-            summary["download_url"] = f"/clips/{clip.id}/download" if clip.final_clip_path else None
-            summary["thumbnail_url"] = to_media_url(clip.thumbnail_path)
+            preview_path = clip.final_clip_path or clip.raw_clip_path
+            summary["preview_url"] = f"{to_media_url(preview_path)}?t={timestamp}" if preview_path else None
+            summary["download_url"] = f"/clips/{clip.id}/download?t={timestamp}" if clip.final_clip_path else None
+            summary["thumbnail_url"] = f"{to_media_url(clip.thumbnail_path)}?t={timestamp}" if clip.thumbnail_path else None
             clips_payload.append(summary)
 
     return JobStatusResponse(

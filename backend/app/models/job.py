@@ -54,6 +54,8 @@ class Job(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    user = relationship("User", back_populates="jobs")
     clips = relationship("Clip", back_populates="job", cascade="all, delete-orphan")
 
     # Ordered list of pipeline steps used to render the step-by-step UI.

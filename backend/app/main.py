@@ -19,9 +19,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import clips, jobs, library, styles
+from app.api import auth, clips, jobs, library, styles
 from app.core.config import COOKIES_FILE, GEMINI_API_KEY, STORAGE_DIR
 from app.core.database import init_db
+from app.services.cleanup_service import cleanup_old_files
 
 app = FastAPI(
     title="TubeCut API",
@@ -39,6 +40,7 @@ app.add_middleware(
 
 app.mount("/media", StaticFiles(directory=str(STORAGE_DIR)), name="media")
 
+app.include_router(auth.router)
 app.include_router(jobs.router)
 app.include_router(clips.router)
 app.include_router(styles.router)
@@ -54,6 +56,10 @@ def on_startup():
     """
     init_db()
     print("[startup] Database tables created/verified.")
+    try:
+        cleanup_old_files()
+    except Exception as e:
+        print(f"[startup] Cleanup failed: {e}")
 
 
 

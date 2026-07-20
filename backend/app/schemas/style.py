@@ -27,6 +27,8 @@ class CaptionStyleSchema(BaseModel):
     position: str
     animation: str
     words_per_block: int
+    background_color: str
+    safe_margins: int
 
 
 class CreateStyleRequest(BaseModel):
@@ -45,6 +47,8 @@ class CreateStyleRequest(BaseModel):
     position: str = Field(default="bottom", pattern="^(top|middle|bottom)$")
     animation: str = Field(default="kinetic", pattern="^(none|fade|pop|bounce|kinetic|word-pop)$")
     words_per_block: int = Field(default=3, ge=1, le=12)
+    background_color: str = "#000000"
+    safe_margins: int = Field(default=60, ge=0, le=200)
 
 
 class UpdateStyleRequest(BaseModel):
@@ -63,3 +67,5 @@ class UpdateStyleRequest(BaseModel):
     position: Optional[str] = Field(default=None, pattern="^(top|middle|bottom)$")
     animation: Optional[str] = Field(default=None, pattern="^(none|fade|pop|bounce|kinetic|word-pop)$")
     words_per_block: Optional[int] = Field(default=None, ge=1, le=12)
+    background_color: Optional[str] = None
+    safe_margins: Optional[int] = Field(default=None, ge=0, le=200)

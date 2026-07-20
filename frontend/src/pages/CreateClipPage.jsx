@@ -13,9 +13,19 @@ export default function CreateClipPage() {
   const [submitError, setSubmitError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [autoReframe, setAutoReframe] = useState(true)
+  const [defaultClipCount, setDefaultClipCount] = useState(3)
   const navigate = useNavigate()
 
   const { job, error: pollError, notFound } = useJobPolling(jobId)
+
+  useEffect(() => {
+    api.getMe()
+      .then((me) => {
+        setAutoReframe(me.settings.auto_reframe_default)
+        setDefaultClipCount(me.settings.default_clip_count)
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (notFound) {
@@ -38,7 +48,11 @@ export default function CreateClipPage() {
     setSubmitting(true)
     setSubmitError(null)
     try {
-      const res = await api.generateClips({ url: url.trim(), auto_reframe: autoReframe })
+      const res = await api.generateClips({
+        url: url.trim(),
+        auto_reframe: autoReframe,
+        target_clip_count: defaultClipCount
+      })
       setJobId(res.job_id)
     } catch (err) {
       setSubmitError(err.message)

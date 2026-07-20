@@ -122,15 +122,17 @@ def generate_ass_file(blocks: List[dict], style: dict, video_width: int, video_h
     CaptionStyle.to_dict()-shaped dict).
     """
     align = _ASS_POSITION_ALIGN.get(style.get("position", "bottom"), 2)
-    margin_v = 60 if align != 5 else 0
+    margin_v = style.get("safe_margins", 60) if align != 5 else 0
 
     primary_color = _hex_to_ass_color(style.get("text_color", "#FFFFFF"))
     highlight_color = _hex_to_ass_color(style.get("highlight_color", "#FFD400"))
     outline_color = _hex_to_ass_color(style.get("outline_color", "#000000"))
+    
+    bg_color_hex = style.get("background_color", "#000000")
     back_color = (
         "&H80000000"
         if not style.get("background_box")
-        else _opacity_to_ass_back_color(style.get("background_opacity", 50))
+        else _opacity_to_ass_back_color(bg_color_hex, style.get("background_opacity", 50))
     )
 
     bold_flag = -1 if style.get("bold") else 0
@@ -199,10 +201,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return header + "\n".join(lines) + "\n"
 
 
-def _opacity_to_ass_back_color(opacity_percent: int) -> str:
-    """Build an ASS BackColour (&HAABBGGRR&) for a black box at given opacity."""
+def _opacity_to_ass_back_color(hex_color: str, opacity_percent: int) -> str:
+    """Convert hex_color '#RRGGBB' to ASS's '&HAABBGGRR' format with given opacity."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6:
+        hex_color = "000000"
+    r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
     alpha = int(255 * (1 - opacity_percent / 100.0))
-    return f"&H{alpha:02X}000000".upper()
+    return f"&H{alpha:02X}{b}{g}{r}".upper()
 
 
 def _seconds_to_ass_timestamp(seconds: float) -> str:

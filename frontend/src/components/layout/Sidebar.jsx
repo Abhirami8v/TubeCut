@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Scissors, Film, Palette, Settings, Sparkles, LogOut } from 'lucide-react'
+import { Scissors, Film, Palette, Settings, Sparkles, LogOut, Shield } from 'lucide-react'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Create Clip', icon: Scissors, end: true },
@@ -9,8 +9,14 @@ const NAV_ITEMS = [
 ]
 
 export default function Sidebar() {
+  const isAdmin = localStorage.getItem('tubecut_is_admin') === 'true'
+
   const handleLogout = () => {
     localStorage.removeItem('tubecut_logged_in')
+    localStorage.removeItem('tubecut_token')
+    localStorage.removeItem('tubecut_email')
+    localStorage.removeItem('tubecut_is_admin')
+    localStorage.removeItem('active_job_id')
     window.location.reload()
   }
 
@@ -56,7 +62,6 @@ export default function Sidebar() {
                   }`}
                 />
                 <span>{label}</span>
-                {/* Active Indicator Bar */}
                 {isActive && (
                   <span className="absolute left-0 top-1/4 bottom-1/4 w-1 rounded-r bg-[#C45EFF] shadow-[0_0_8px_#C45EFF]" />
                 )}
@@ -64,6 +69,36 @@ export default function Sidebar() {
             )}
           </NavLink>
         ))}
+
+        {/* Render Admin Panel item if current user is admin */}
+        {isAdmin && (
+          <NavLink
+            to="/admin"
+            className={({ isActive }) =>
+              `group relative flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-300 ${
+                isActive
+                  ? 'bg-[#1E1C22] text-[#C45EFF] shadow-[inset_0_0_1px_1px_rgba(196,94,255,0.15)]'
+                  : 'text-[var(--color-text-dim)] hover:text-white hover:bg-[#151418]'
+              }`
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <Shield
+                  size={18}
+                  strokeWidth={2.2}
+                  className={`transition-colors duration-300 ${
+                    isActive ? 'text-[#C45EFF]' : 'text-[var(--color-text-faint)] group-hover:text-[var(--color-text-dim)]'
+                  }`}
+                />
+                <span>Admin Panel</span>
+                {isActive && (
+                  <span className="absolute left-0 top-1/4 bottom-1/4 w-1 rounded-r bg-[#C45EFF] shadow-[0_0_8px_#C45EFF]" />
+                )}
+              </>
+            )}
+          </NavLink>
+        )}
       </nav>
 
       {/* Footer / Logout action */}

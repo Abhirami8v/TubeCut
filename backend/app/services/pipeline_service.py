@@ -61,6 +61,12 @@ def run_pipeline(
     with _job_semaphore:
         db = SessionLocal()
         try:
+            from app.services.cleanup_service import cleanup_old_files
+            try:
+                cleanup_old_files()
+            except Exception as e:
+                print(f"[Pipeline Cleanup] Error running cleanup: {e}")
+
             job = db.query(Job).filter(Job.id == job_id).first()
             if job is None:
                 return
@@ -135,6 +141,42 @@ def _run_pipeline_inner(
     default_style = None
     if auto_caption_style_id:
         default_style = style_service.get_style(db, auto_caption_style_id)
+
+    user_settings = job.user.settings if (job.user and job.user.settings) else None
+    if default_style is None and user_settings:
+        from app.models.caption import CaptionStyle
+        default_style = db.query(CaptionStyle).filter(
+            CaptionStyle.user_id == job.user_id,
+            CaptionStyle.name == "My Settings Default"
+        ).first()
+
+        if not default_style:
+            default_style = CaptionStyle(
+                name="My Settings Default",
+                user_id=job.user_id,
+                is_preset=False,
+            )
+            db.add(default_style)
+            db.flush()
+
+        default_style.font_family = user_settings.caption_font_family
+        default_style.font_size = user_settings.caption_font_size
+        default_style.bold = user_settings.caption_font_weight == "bold"
+        default_style.text_color = user_settings.caption_text_color
+        default_style.highlight_color = user_settings.caption_highlight_color
+        default_style.background_color = user_settings.caption_background_color
+        default_style.outline_color = user_settings.caption_outline_color
+        default_style.outline_width = user_settings.caption_outline_width
+        default_style.shadow_strength = user_settings.caption_shadow_strength
+        default_style.position = user_settings.caption_position
+        default_style.animation = user_settings.caption_animation
+        default_style.safe_margins = user_settings.caption_safe_margins
+        default_style.words_per_block = user_settings.caption_words_per_block
+        default_style.background_box = user_settings.caption_background_box
+        default_style.background_opacity = user_settings.caption_background_opacity
+        default_style.uppercase = user_settings.caption_uppercase
+        db.commit()
+
     if default_style is None:
         default_style = style_service.get_default_style(db)
 
@@ -232,13 +274,9 @@ def _run_pipeline_inner(
 
     _update_job(db, job, status=JobStatus.COMPLETED, progress=100, label="Done")
 
-    # Clean up the large source video file to save disk space
-    if job.source_video_path:
-        try:
-            os.remove(job.source_video_path)
-            logger.info(f"Cleaned up large source video file: {job.source_video_path}")
-        except OSError:
-            pass
+    # The large source video file is preserved for re-rendering clips.
+    # It will be cleaned up automatically by the cleanup policy after CLEANUP_DAYS.
+    # We no longer delete it here.
 
     gc.collect()
 

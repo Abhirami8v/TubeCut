@@ -10,6 +10,7 @@ so the preview always reflects the latest edit).
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -32,6 +33,8 @@ from app.schemas.clip import (
 )
 from app.services import caption_burn_service, caption_service, clip_service, style_service, transcription_service
 from app.utils.file_urls import to_media_url
+from app.api.auth_deps import get_current_user
+from app.models.user import User
 
 router = APIRouter(tags=["clips"])
 
@@ -43,14 +46,27 @@ def _get_clip_or_404(db: Session, clip_id: str) -> Clip:
     return clip
 
 
+def _verify_clip_owner(clip: Clip, current_user: User) -> None:
+    if clip.job.user_id and clip.job.user_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="You do not have permission to access this clip.")
+
+
 def _clip_to_response(clip: Clip) -> ClipResponse:
     summary = clip.to_summary_dict()
+    timestamp = int(time.time())
+
+    preview_path = clip.final_clip_path or clip.reframed_clip_path or clip.raw_clip_path
+    preview_url = f"{to_media_url(preview_path)}?t={timestamp}" if preview_path else None
+    final_url = f"{to_media_url(clip.final_clip_path)}?t={timestamp}" if clip.final_clip_path else None
+    download_url = f"/clips/{clip.id}/download?t={timestamp}" if clip.final_clip_path else None
+    thumbnail_url = f"{to_media_url(clip.thumbnail_path)}?t={timestamp}" if clip.thumbnail_path else None
+
     return ClipResponse(
         **summary,
-        preview_url=to_media_url(clip.final_clip_path or clip.reframed_clip_path or clip.raw_clip_path),
-        final_url=to_media_url(clip.final_clip_path),
-        download_url=f"/clips/{clip.id}/download" if clip.final_clip_path else None,
-        thumbnail_url=to_media_url(clip.thumbnail_path),
+        preview_url=preview_url,
+        final_url=final_url,
+        download_url=download_url,
+        thumbnail_url=thumbnail_url,
         caption_blocks=[b.to_dict() for b in sorted(clip.caption_blocks, key=lambda b: b.order_index)],
     )
 
@@ -172,14 +188,24 @@ def _rebuild_word_accurate_captions(db: Session, clip: Clip) -> None:
 
 
 @router.get("/clips/{clip_id}", response_model=ClipResponse)
-def get_clip(clip_id: str, db: Session = Depends(get_db)):
+def get_clip(
+    clip_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
     return _clip_to_response(clip)
 
 
 @router.get("/clips/{clip_id}/download")
-def download_clip(clip_id: str, db: Session = Depends(get_db)):
+def download_clip(
+    clip_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
     file_path = Path(clip.final_clip_path or clip.reframed_clip_path or clip.raw_clip_path or "")
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Rendered video is not available")
@@ -195,8 +221,14 @@ def download_clip(clip_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/clips/{clip_id}/trim", response_model=TrimRenderResponse)
-def trim_clip(clip_id: str, payload: TrimClipRequest, db: Session = Depends(get_db)):
+def trim_clip(
+    clip_id: str,
+    payload: TrimClipRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
     job = clip.job
 
     if not job.source_video_path:
@@ -256,7 +288,12 @@ def trim_clip(clip_id: str, payload: TrimClipRequest, db: Session = Depends(get_
 
 
 @router.post("/clips/{clip_id}/create-caption", response_model=ClipResponse)
-def create_caption(clip_id: str, payload: CreateCaptionRequest, db: Session = Depends(get_db)):
+def create_caption(
+    clip_id: str,
+    payload: CreateCaptionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Manually add a new caption block to a clip. Used both to fill in
     gaps the auto-transcription missed and as the primary way to add
@@ -264,6 +301,7 @@ def create_caption(clip_id: str, payload: CreateCaptionRequest, db: Session = De
     produced no words for this time range).
     """
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
 
     if payload.end_time <= payload.start_time:
         raise HTTPException(status_code=400, detail="end_time must be after start_time")
@@ -289,8 +327,14 @@ def create_caption(clip_id: str, payload: CreateCaptionRequest, db: Session = De
 
 
 @router.post("/clips/{clip_id}/delete-caption", response_model=ClipResponse)
-def delete_caption(clip_id: str, payload: DeleteCaptionRequest, db: Session = Depends(get_db)):
+def delete_caption(
+    clip_id: str,
+    payload: DeleteCaptionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
     block = db.query(CaptionBlock).filter(CaptionBlock.id == payload.block_id, CaptionBlock.clip_id == clip.id).first()
     if block is None:
         raise HTTPException(status_code=404, detail="Caption block not found")
@@ -306,8 +350,14 @@ def delete_caption(clip_id: str, payload: DeleteCaptionRequest, db: Session = De
 
 
 @router.post("/clips/{clip_id}/update-caption", response_model=ClipResponse)
-def update_caption(clip_id: str, payload: UpdateCaptionRequest, db: Session = Depends(get_db)):
+def update_caption(
+    clip_id: str,
+    payload: UpdateCaptionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
     block = db.query(CaptionBlock).filter(CaptionBlock.id == payload.block_id, CaptionBlock.clip_id == clip.id).first()
     if block is None:
         raise HTTPException(status_code=404, detail="Caption block not found")
@@ -331,8 +381,14 @@ def update_caption(clip_id: str, payload: UpdateCaptionRequest, db: Session = De
 
 
 @router.post("/clips/{clip_id}/split-caption", response_model=ClipResponse)
-def split_caption(clip_id: str, payload: SplitCaptionRequest, db: Session = Depends(get_db)):
+def split_caption(
+    clip_id: str,
+    payload: SplitCaptionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
     block = db.query(CaptionBlock).filter(CaptionBlock.id == payload.block_id, CaptionBlock.clip_id == clip.id).first()
     if block is None:
         raise HTTPException(status_code=404, detail="Caption block not found")
@@ -363,8 +419,14 @@ def split_caption(clip_id: str, payload: SplitCaptionRequest, db: Session = Depe
 
 
 @router.post("/clips/{clip_id}/merge-caption", response_model=ClipResponse)
-def merge_caption(clip_id: str, payload: MergeCaptionRequest, db: Session = Depends(get_db)):
+def merge_caption(
+    clip_id: str,
+    payload: MergeCaptionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
     first = db.query(CaptionBlock).filter(CaptionBlock.id == payload.first_block_id, CaptionBlock.clip_id == clip.id).first()
     second = db.query(CaptionBlock).filter(CaptionBlock.id == payload.second_block_id, CaptionBlock.clip_id == clip.id).first()
 
@@ -389,8 +451,14 @@ def merge_caption(clip_id: str, payload: MergeCaptionRequest, db: Session = Depe
 
 
 @router.post("/clips/{clip_id}/apply-style", response_model=ClipResponse)
-def apply_style(clip_id: str, payload: ApplyStyleRequest, db: Session = Depends(get_db)):
+def apply_style(
+    clip_id: str,
+    payload: ApplyStyleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     clip = _get_clip_or_404(db, clip_id)
+    _verify_clip_owner(clip, current_user)
 
     if payload.custom_style:
         if clip.applied_style and not clip.applied_style.is_preset:

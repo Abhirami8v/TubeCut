@@ -70,6 +70,11 @@ class CaptionStyle(Base):
     animation = Column(String, nullable=False, default="pop")    # none|fade|pop|bounce
     words_per_block = Column(Integer, nullable=False, default=3)
 
+    background_color = Column(String, nullable=False, default="#000000")
+    safe_margins = Column(Integer, nullable=False, default=60)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    user = relationship("User", back_populates="styles")
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -89,6 +94,8 @@ class CaptionStyle(Base):
             "position": self.position,
             "animation": self.animation,
             "words_per_block": self.words_per_block,
+            "background_color": self.background_color,
+            "safe_margins": self.safe_margins,
         }
 
 
