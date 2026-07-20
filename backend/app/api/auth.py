@@ -5,7 +5,7 @@ Authentication and User Settings API endpoints.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -18,12 +18,12 @@ router = APIRouter(tags=["auth"])
 
 
 class UserRegisterRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str = Field(..., min_length=4)
 
 
 class UserLoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 

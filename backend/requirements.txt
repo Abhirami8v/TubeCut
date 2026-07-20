@@ -12,6 +12,7 @@ cryptography==49.0.0
 ctranslate2==4.8.0
 cycler==0.12.1
 distro==1.9.0
+email-validator
 fastapi==0.115.6
 faster-whisper==1.1.0
 filelock==3.29.4
