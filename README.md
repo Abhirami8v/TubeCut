@@ -106,3 +106,4 @@ npm run dev
 ## License
 
 This project was developed for educational and learning purposes.
+"# TRIAL" 
